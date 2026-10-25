@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChineScan investigation records",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "occurred_at",
+        "kind",
+        "summary"
+      ],
+      "title": "Event",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "confidence": {
+          "default": 0.5,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "Indicator",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "status": {
+          "default": "open",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "Case",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "event_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Event Id"
+        }
+      },
+      "required": [
+        "occurred_at",
+        "description"
+      ],
+      "title": "TimelineEntry",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "scanner": {
+          "title": "Scanner",
+          "type": "string"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finished At"
+        }
+      },
+      "required": [
+        "target_id",
+        "scanner",
+        "started_at"
+      ],
+      "title": "Scan",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "kind"
+      ],
+      "title": "Target",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Type"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "generated_at": {
+          "format": "date-time",
+          "title": "Generated At",
+          "type": "string"
+        },
+        "finding_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Finding Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "title",
+        "generated_at"
+      ],
+      "title": "Report",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "scope": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Scope",
+          "type": "array"
+        },
+        "granted_by": {
+          "title": "Granted By",
+          "type": "string"
+        },
+        "valid_from": {
+          "format": "date-time",
+          "title": "Valid From",
+          "type": "string"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valid Until"
+        }
+      },
+      "required": [
+        "scope",
+        "granted_by",
+        "valid_from"
+      ],
+      "title": "Authorization",
+      "type": "object"
+    }
+  ]
+}

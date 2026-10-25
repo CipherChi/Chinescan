@@ -1,0 +1,9 @@
+"""Generic repository boundary for versioned records."""
+
+from typing import Any, Protocol
+
+
+class Repository(Protocol):
+    def save(self, record_type: str, record_id: str, payload: dict[str, Any]) -> None: ...
+
+    def get(self, record_type: str, record_id: str) -> dict[str, Any] | None: ...

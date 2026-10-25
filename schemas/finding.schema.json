@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "Reference": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "Reference",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "severity": {
+      "$ref": "#/$defs/Severity",
+      "default": "info"
+    },
+    "fingerprint": {
+      "minLength": 1,
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "references": {
+      "items": {
+        "$ref": "#/$defs/Reference"
+      },
+      "title": "References",
+      "type": "array"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    }
+  },
+  "required": [
+    "title",
+    "fingerprint"
+  ],
+  "title": "Finding",
+  "type": "object"
+}

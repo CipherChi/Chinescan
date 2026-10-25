@@ -1,0 +1,2 @@
+database_path = "~/.local/share/chinescan/chinescan.sqlite3"
+log_level = "INFO"

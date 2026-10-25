@@ -1,0 +1,19 @@
+services:
+  chinescan:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: chinescan:0.1.0
+    command: ["--help"]
+    volumes:
+      - chinescan-data:/home/chinescan/.local/share/chinescan
+      - chinescan-config:/home/chinescan/.config/chinescan
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  chinescan-data:
+  chinescan-config:
