@@ -52,3 +52,8 @@ exclude = ["migrations"]
 
 [tool.uv]
 package = true
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9,<2",
+]
