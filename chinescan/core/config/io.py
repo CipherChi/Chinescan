@@ -16,7 +16,11 @@ def init_config(path: Path | None = None) -> Path:
     if target.exists():
         raise ConfigurationError(f"Configuration already exists: {target}")
     defaults = {"database_path": str(Settings().database_path), "log_level": "INFO"}
-    target.write_text(tomli_w.dumps(defaults), encoding="utf-8")
+    try:
+        with target.open("x", encoding="utf-8") as stream:
+            stream.write(tomli_w.dumps(defaults))
+    except FileExistsError as exc:
+        raise ConfigurationError(f"Configuration already exists: {target}") from exc
     return target
 
 

@@ -15,6 +15,17 @@ from chinescan.core.models.investigation import (
 )
 
 __all__ = [
-    "Artifact", "Authorization", "Case", "Event", "Finding", "Indicator", "Reference",
-    "Report", "Scan", "SchemaRecord", "Severity", "Target", "TimelineEntry",
+    "Artifact",
+    "Authorization",
+    "Case",
+    "Event",
+    "Finding",
+    "Indicator",
+    "Reference",
+    "Report",
+    "Scan",
+    "SchemaRecord",
+    "Severity",
+    "Target",
+    "TimelineEntry",
 ]

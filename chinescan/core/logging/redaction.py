@@ -4,12 +4,15 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-_SECRET = re.compile(r"(?i)(authorization|api[_-]?key|token|password|secret)(\s*[:=]\s*)([^\s,;]+)")
+_SECRET = re.compile(
+    r"(?i)(authorization|api[_-]?key|token|password|secret)(\s*[:=]\s*)"
+    r"(?:bearer\s+|basic\s+)?([^\s,;]+)"
+)
 
 
 def redact(value: Any) -> Any:
     if isinstance(value, Mapping):
-        secret_key = re.compile(r"(?i)(token|secret|password|api[_-]?key)")
+        secret_key = re.compile(r"(?i)(authorization|token|secret|password|api[_-]?key)")
         return {
             key: "[REDACTED]" if secret_key.search(str(key)) else redact(item)
             for key, item in value.items()
