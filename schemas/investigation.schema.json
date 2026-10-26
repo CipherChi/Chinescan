@@ -10,6 +10,10 @@
           "title": "Schema Version",
           "type": "string"
         },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
         "occurred_at": {
           "format": "date-time",
           "title": "Occurred At",
@@ -22,6 +26,201 @@
         "summary": {
           "title": "Summary",
           "type": "string"
+        },
+        "source": {
+          "default": "unknown",
+          "title": "Source",
+          "type": "string"
+        },
+        "source_ip": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Ip"
+        },
+        "destination_ip": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Destination Ip"
+        },
+        "user": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host"
+        },
+        "process": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Process"
+        },
+        "command_line": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command Line"
+        },
+        "file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        },
+        "file_hashes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "File Hashes",
+          "type": "array"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "user_agent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Agent"
+        },
+        "event_outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Event Outcome"
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Direction"
+        },
+        "bytes_out": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bytes Out"
+        },
+        "mitre_attack_techniques": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Mitre Attack Techniques",
+          "type": "array"
+        },
+        "indicator_matches": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Indicator Matches",
+          "type": "array"
+        },
+        "raw_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Ref"
         }
       },
       "required": [
@@ -29,7 +228,6 @@
         "kind",
         "summary"
       ],
-      "title": "Event",
       "type": "object"
     },
     {
@@ -38,6 +236,92 @@
         "schema_version": {
           "default": "1.0",
           "title": "Schema Version",
+          "type": "string"
+        },
+        "alert_id": {
+          "title": "Alert Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "title": "Severity",
+          "type": "string",
+          "default": "medium"
+        },
+        "confidence": {
+          "enum": [
+            "CONFIRMED",
+            "LIKELY",
+            "POSSIBLE",
+            "INFORMATIONAL"
+          ],
+          "title": "Confidence",
+          "type": "string",
+          "default": "POSSIBLE"
+        },
+        "rule_id": {
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "event_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Event Ids",
+          "type": "array"
+        },
+        "indicator_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Indicator Ids",
+          "type": "array"
+        },
+        "mitre_attack_techniques": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Mitre Attack Techniques",
+          "type": "array"
+        },
+        "fingerprint": {
+          "minLength": 1,
+          "title": "Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "rule_id",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "indicator_id": {
+          "title": "Indicator Id",
           "type": "string"
         },
         "kind": {
@@ -54,21 +338,74 @@
           "minimum": 0,
           "title": "Confidence",
           "type": "number"
+        },
+        "source": {
+          "default": "local",
+          "title": "Source",
+          "type": "string"
+        },
+        "context": {
+          "default": "",
+          "title": "Context",
+          "type": "string"
+        },
+        "first_seen": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "First Seen"
+        },
+        "last_seen": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Seen"
+        },
+        "related_findings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Related Findings",
+          "type": "array"
+        },
+        "related_events": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Related Events",
+          "type": "array"
         }
       },
       "required": [
         "kind",
         "value"
       ],
-      "title": "Indicator",
       "type": "object"
     },
     {
       "additionalProperties": false,
       "properties": {
         "schema_version": {
-          "default": "1.0",
+          "default": "2.0",
           "title": "Schema Version",
+          "type": "string"
+        },
+        "case_id": {
+          "title": "Case Id",
           "type": "string"
         },
         "title": {
@@ -81,15 +418,207 @@
           "type": "string"
         },
         "status": {
-          "default": "open",
-          "title": "Status",
+          "enum": [
+            "open",
+            "in_progress",
+            "resolved",
+            "closed"
+          ],
+          "title": "CaseStatus",
+          "type": "string",
+          "default": "open"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "title": "Severity",
+          "type": "string",
+          "default": "medium"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
           "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "scan_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Scan Ids",
+          "type": "array"
+        },
+        "finding_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Finding Ids",
+          "type": "array"
+        },
+        "links": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "schema_version": {
+                "default": "1.0",
+                "title": "Schema Version",
+                "type": "string"
+              },
+              "record_type": {
+                "maxLength": 80,
+                "minLength": 1,
+                "title": "Record Type",
+                "type": "string"
+              },
+              "record_id": {
+                "maxLength": 255,
+                "minLength": 1,
+                "title": "Record Id",
+                "type": "string"
+              },
+              "source": {
+                "maxLength": 200,
+                "minLength": 1,
+                "title": "Source",
+                "type": "string"
+              },
+              "linked_at": {
+                "anyOf": [
+                  {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Linked At"
+              }
+            },
+            "required": [
+              "record_type",
+              "record_id",
+              "source"
+            ],
+            "title": "CaseRecordLink",
+            "type": "object"
+          },
+          "title": "Links",
+          "type": "array"
+        },
+        "notes": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "schema_version": {
+                "default": "1.0",
+                "title": "Schema Version",
+                "type": "string"
+              },
+              "note_id": {
+                "title": "Note Id",
+                "type": "string"
+              },
+              "case_id": {
+                "maxLength": 255,
+                "minLength": 1,
+                "title": "Case Id",
+                "type": "string"
+              },
+              "body": {
+                "maxLength": 8000,
+                "minLength": 1,
+                "title": "Body",
+                "type": "string"
+              },
+              "created_at": {
+                "format": "date-time",
+                "title": "Created At",
+                "type": "string"
+              },
+              "author_label": {
+                "anyOf": [
+                  {
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Author Label"
+              }
+            },
+            "required": [
+              "case_id",
+              "body"
+            ],
+            "title": "CaseNote",
+            "type": "object"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "activities": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "schema_version": {
+                "default": "1.0",
+                "title": "Schema Version",
+                "type": "string"
+              },
+              "activity_id": {
+                "title": "Activity Id",
+                "type": "string"
+              },
+              "activity_type": {
+                "enum": [
+                  "created",
+                  "status_changed",
+                  "record_linked",
+                  "note_added"
+                ],
+                "title": "CaseActivityType",
+                "type": "string"
+              },
+              "occurred_at": {
+                "format": "date-time",
+                "title": "Occurred At",
+                "type": "string"
+              },
+              "details": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "title": "Details",
+                "type": "object"
+              }
+            },
+            "required": [
+              "activity_type"
+            ],
+            "title": "CaseActivity",
+            "type": "object"
+          },
+          "title": "Activities",
+          "type": "array"
         }
       },
       "required": [
         "title"
       ],
-      "title": "Case",
       "type": "object"
     },
     {
@@ -98,6 +627,10 @@
         "schema_version": {
           "default": "1.0",
           "title": "Schema Version",
+          "type": "string"
+        },
+        "entry_id": {
+          "title": "Entry Id",
           "type": "string"
         },
         "occurred_at": {
@@ -120,13 +653,24 @@
           ],
           "default": null,
           "title": "Event Id"
+        },
+        "scan_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scan Id"
         }
       },
       "required": [
         "occurred_at",
         "description"
       ],
-      "title": "TimelineEntry",
       "type": "object"
     },
     {
@@ -135,6 +679,10 @@
         "schema_version": {
           "default": "1.0",
           "title": "Schema Version",
+          "type": "string"
+        },
+        "scan_id": {
+          "title": "Scan Id",
           "type": "string"
         },
         "target_id": {
@@ -162,6 +710,73 @@
           ],
           "default": null,
           "title": "Finished At"
+        },
+        "status": {
+          "default": "complete",
+          "title": "Status",
+          "type": "string"
+        },
+        "project_types": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Project Types",
+          "type": "array"
+        },
+        "finding_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Finding Ids",
+          "type": "array"
+        },
+        "event_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Event Ids",
+          "type": "array"
+        },
+        "alert_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Alert Ids",
+          "type": "array"
+        },
+        "timeline_entry_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Timeline Entry Ids",
+          "type": "array"
+        },
+        "failures": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Failures",
+          "type": "object"
+        },
+        "scan_options": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Scan Options",
+          "type": "object"
         }
       },
       "required": [
@@ -169,7 +784,6 @@
         "scanner",
         "started_at"
       ],
-      "title": "Scan",
       "type": "object"
     },
     {
@@ -193,7 +807,6 @@
         "value",
         "kind"
       ],
-      "title": "Target",
       "type": "object"
     },
     {
@@ -236,7 +849,6 @@
       "required": [
         "name"
       ],
-      "title": "Artifact",
       "type": "object"
     },
     {
@@ -268,7 +880,6 @@
         "title",
         "generated_at"
       ],
-      "title": "Report",
       "type": "object"
     },
     {
@@ -314,7 +925,67 @@
         "granted_by",
         "valid_from"
       ],
-      "title": "Authorization",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Audit record tying a domain assessment to an explicit authorization method.",
+      "properties": {
+        "schema_version": {
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "authorization_id": {
+          "title": "Authorization Id",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "operator": {
+          "title": "Operator",
+          "type": "string"
+        },
+        "authorized_at": {
+          "format": "date-time",
+          "title": "Authorized At",
+          "type": "string"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valid Until"
+        },
+        "scan_profile": {
+          "title": "Scan Profile",
+          "type": "string"
+        },
+        "scan_id": {
+          "title": "Scan Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "method",
+        "operator",
+        "scan_profile",
+        "scan_id"
+      ],
       "type": "object"
     }
   ]

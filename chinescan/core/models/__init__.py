@@ -1,11 +1,19 @@
 """Canonical records."""
 
-from chinescan.core.models.common import SchemaRecord, Severity
+from chinescan.core.models.common import Confidence, FindingCategory, SchemaRecord, Severity
 from chinescan.core.models.finding import Finding, Reference
 from chinescan.core.models.investigation import (
+    Alert,
     Artifact,
     Authorization,
+    AuthorizationRecord,
     Case,
+    CaseActivity,
+    CaseActivityType,
+    CaseNote,
+    CaseRecordLink,
+    CaseStatus,
+    CaseTimelineItem,
     Event,
     Indicator,
     Report,
@@ -15,6 +23,27 @@ from chinescan.core.models.investigation import (
 )
 
 __all__ = [
-    "Artifact", "Authorization", "Case", "Event", "Finding", "Indicator", "Reference",
-    "Report", "Scan", "SchemaRecord", "Severity", "Target", "TimelineEntry",
+    "Artifact",
+    "Alert",
+    "Authorization",
+    "AuthorizationRecord",
+    "Case",
+    "CaseActivity",
+    "CaseActivityType",
+    "CaseNote",
+    "CaseRecordLink",
+    "CaseStatus",
+    "CaseTimelineItem",
+    "Confidence",
+    "Event",
+    "Finding",
+    "FindingCategory",
+    "Indicator",
+    "Reference",
+    "Report",
+    "Scan",
+    "SchemaRecord",
+    "Severity",
+    "Target",
+    "TimelineEntry",
 ]

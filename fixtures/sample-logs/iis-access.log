@@ -1,0 +1,4 @@
+#Software: Microsoft Internet Information Services 10.0
+#Fields: date time s-ip cs-method cs-uri-stem cs-uri-query s-port cs-username c-ip sc-status cs(User-Agent)
+2026-10-25 10:15:00 192.0.2.10 GET /health - 443 - 192.0.2.30 200 FixtureBrowser/1.0
+2026-10-25 10:16:00 192.0.2.10 GET /search q=union%20select%20password 443 guest 192.0.2.31 404 FixtureScanner/1.0

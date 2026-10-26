@@ -8,6 +8,7 @@ __pycache__
 htmlcov
 tests
 docs
+fixtures
 *.sqlite3
 *.db
 .env

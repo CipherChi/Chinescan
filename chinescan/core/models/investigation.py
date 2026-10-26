@@ -1,41 +1,159 @@
 """Distinct, typed top-level investigation records."""
 
-from datetime import datetime
+from datetime import UTC, datetime
+from enum import StrEnum
+from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from chinescan.core.models.common import SchemaRecord
+from chinescan.core.models.common import Confidence, SchemaRecord, Severity
 
 
 class Event(SchemaRecord):
+    event_id: str = Field(default_factory=lambda: str(uuid4()))
     occurred_at: datetime
     kind: str
     summary: str
+    source: str = "unknown"
+    source_ip: str | None = None
+    destination_ip: str | None = None
+    user: str | None = None
+    host: str | None = None
+    process: str | None = None
+    command_line: str | None = None
+    file: str | None = None
+    sha256: str | None = None
+    file_hashes: list[str] = Field(default_factory=list)
+    url: str | None = None
+    user_agent: str | None = None
+    event_outcome: str | None = None
+    direction: str | None = None
+    bytes_out: int | None = Field(default=None, ge=0)
+    mitre_attack_techniques: list[str] = Field(default_factory=list)
+    indicator_matches: list[str] = Field(default_factory=list)
+    raw_ref: str | None = None
+
+
+class Alert(SchemaRecord):
+    alert_id: str = Field(default_factory=lambda: str(uuid4()))
+    title: str
+    description: str = ""
+    severity: Severity = Severity.MEDIUM
+    confidence: Confidence = Confidence.POSSIBLE
+    rule_id: str
+    event_ids: list[str] = Field(default_factory=list)
+    indicator_ids: list[str] = Field(default_factory=list)
+    mitre_attack_techniques: list[str] = Field(default_factory=list)
+    fingerprint: str = Field(min_length=1)
 
 
 class Indicator(SchemaRecord):
+    indicator_id: str = Field(default_factory=lambda: str(uuid4()))
     kind: str
     value: str
     confidence: float = Field(default=0.5, ge=0, le=1)
+    source: str = "local"
+    context: str = ""
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
+    related_findings: list[str] = Field(default_factory=list)
+    related_events: list[str] = Field(default_factory=list)
+
+
+class CaseStatus(StrEnum):
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
+
+
+class CaseActivityType(StrEnum):
+    CREATED = "created"
+    STATUS_CHANGED = "status_changed"
+    RECORD_LINKED = "record_linked"
+    NOTE_ADDED = "note_added"
+
+
+class CaseRecordLink(SchemaRecord):
+    record_type: str = Field(min_length=1, max_length=80)
+    record_id: str = Field(min_length=1, max_length=255)
+    source: str = Field(min_length=1, max_length=200)
+    linked_at: datetime | None = None
+
+
+class CaseNote(SchemaRecord):
+    note_id: str = Field(default_factory=lambda: str(uuid4()))
+    case_id: str = Field(min_length=1, max_length=255)
+    body: str = Field(min_length=1, max_length=8_000)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    author_label: str | None = Field(default=None, max_length=100)
+
+
+class CaseActivity(SchemaRecord):
+    activity_id: str = Field(default_factory=lambda: str(uuid4()))
+    activity_type: CaseActivityType
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    details: dict[str, str] = Field(default_factory=dict)
 
 
 class Case(SchemaRecord):
+    schema_version: str = "2.0"
+    case_id: str = Field(default_factory=lambda: str(uuid4()))
     title: str
     description: str = ""
-    status: str = "open"
+    status: CaseStatus = CaseStatus.OPEN
+    severity: Severity = Severity.MEDIUM
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    scan_ids: list[str] = Field(default_factory=list)
+    finding_ids: list[str] = Field(default_factory=list)
+    links: list[CaseRecordLink] = Field(default_factory=list)
+    notes: list[CaseNote] = Field(default_factory=list)
+    activities: list[CaseActivity] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_note_ownership(self) -> "Case":
+        if any(note.case_id != self.case_id for note in self.notes):
+            raise ValueError("case notes must belong to their containing case")
+        if len({note.note_id for note in self.notes}) != len(self.notes):
+            raise ValueError("case note IDs must be unique")
+        return self
+
+
+class CaseTimelineItem(SchemaRecord):
+    item_id: str
+    category: str
+    description: str
+    event_occurred_at: datetime | None = None
+    record_ingested_at: datetime | None = None
+    case_activity_at: datetime | None = None
+    record_type: str | None = None
+    record_id: str | None = None
+    source: str | None = None
 
 
 class TimelineEntry(SchemaRecord):
+    entry_id: str = Field(default_factory=lambda: str(uuid4()))
     occurred_at: datetime
     description: str
     event_id: str | None = None
+    scan_id: str | None = None
 
 
 class Scan(SchemaRecord):
+    scan_id: str = Field(default_factory=lambda: str(uuid4()))
     target_id: str
     scanner: str
     started_at: datetime
     finished_at: datetime | None = None
+    status: str = "complete"
+    project_types: list[str] = Field(default_factory=list)
+    finding_ids: list[str] = Field(default_factory=list)
+    event_ids: list[str] = Field(default_factory=list)
+    alert_ids: list[str] = Field(default_factory=list)
+    timeline_entry_ids: list[str] = Field(default_factory=list)
+    failures: dict[str, str] = Field(default_factory=dict)
+    scan_options: dict[str, str | int | float | bool] = Field(default_factory=dict)
 
 
 class Target(SchemaRecord):
@@ -60,3 +178,16 @@ class Authorization(SchemaRecord):
     granted_by: str
     valid_from: datetime
     valid_until: datetime | None = None
+
+
+class AuthorizationRecord(SchemaRecord):
+    """Audit record tying a domain assessment to an explicit authorization method."""
+
+    authorization_id: str = Field(default_factory=lambda: str(uuid4()))
+    target: str
+    method: str
+    operator: str
+    authorized_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    valid_until: datetime | None = None
+    scan_profile: str
+    scan_id: str

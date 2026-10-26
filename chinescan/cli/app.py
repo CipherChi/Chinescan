@@ -1,12 +1,31 @@
 """Typer application entry point."""
 
+from pathlib import Path
+
 import typer
 
 from chinescan.cli import commands
 
 app = typer.Typer(help="Authorization-first security investigation platform.")
+
+
+@app.callback()
+def configure(
+    config: Path | None = typer.Option(  # noqa: B008
+        None, "--config", help="Local TOML configuration file."
+    ),
+    database: Path | None = typer.Option(  # noqa: B008
+        None, "--database", help="Local SQLite database path."
+    ),
+) -> None:
+    """Choose local configuration inputs; explicit options override environment and file."""
+    commands.configure_settings(config, database)
+
+
 app.command("version")(commands.version)
 app.add_typer(commands.config_app, name="config")
+app.command("code")(commands.code_scan)
+app.command("logs")(commands.logs_ingest)
 
 
 @app.command("scan")
@@ -15,10 +34,37 @@ def scan_stub() -> None:
     commands.not_implemented(3, "scan")
 
 
-@app.command("report")
-def report_stub() -> None:
-    """Generate a report (Phase 5)."""
-    commands.not_implemented(5, "report")
+app.command("report")(commands.report)
+app.command("compare")(commands.compare_scans)
+app.command("trends")(commands.scan_trends)
+app.add_typer(commands.case_app, name="case")
+app.add_typer(commands.db_app, name="db")
+
+malware_app = typer.Typer(help="Non-executing local malware static triage.")
+malware_app.command("analyze")(commands.malware_analyze)
+
+
+@malware_app.command("memory")
+def malware_memory_stub(
+    image: str = typer.Argument(..., help="Local memory image path (analysis is not implemented)."),
+) -> None:
+    """Run optional memory-image triage (not implemented)."""
+    del image
+    commands.not_implemented(5, "malware memory")
+
+
+@malware_app.command("detonate")
+def malware_detonate_stub(
+    sample: str = typer.Argument(..., help="Sample path (sandbox detonation is not implemented)."),
+) -> None:
+    """Run dynamic analysis in a configured isolated sandbox (not implemented)."""
+    del sample
+    commands.not_implemented(5, "malware detonate")
+
+
+app.add_typer(malware_app, name="malware")
+
+app.command("domain")(commands.domain_assess)
 
 
 def main() -> None:

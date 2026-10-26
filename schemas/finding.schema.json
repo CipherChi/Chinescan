@@ -1,5 +1,34 @@
 {
   "$defs": {
+    "Confidence": {
+      "enum": [
+        "CONFIRMED",
+        "LIKELY",
+        "POSSIBLE",
+        "INFORMATIONAL"
+      ],
+      "title": "Confidence",
+      "type": "string"
+    },
+    "FindingCategory": {
+      "enum": [
+        "SAST",
+        "SCA",
+        "SECRETS",
+        "IAC",
+        "CONTAINER",
+        "NETWORK",
+        "WEB",
+        "TLS",
+        "DNS",
+        "LOG",
+        "MALWARE",
+        "MEMORY",
+        "THREAT_INTEL"
+      ],
+      "title": "FindingCategory",
+      "type": "string"
+    },
     "Reference": {
       "additionalProperties": false,
       "properties": {
@@ -53,6 +82,10 @@
       "title": "Schema Version",
       "type": "string"
     },
+    "finding_id": {
+      "title": "Finding Id",
+      "type": "string"
+    },
     "title": {
       "title": "Title",
       "type": "string"
@@ -70,6 +103,36 @@
       "minLength": 1,
       "title": "Fingerprint",
       "type": "string"
+    },
+    "category": {
+      "$ref": "#/$defs/FindingCategory",
+      "default": "SAST"
+    },
+    "confidence": {
+      "$ref": "#/$defs/Confidence",
+      "default": "POSSIBLE"
+    },
+    "scanner": {
+      "default": "unknown",
+      "title": "Scanner",
+      "type": "string"
+    },
+    "rule_id": {
+      "default": "unknown",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "location": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Location"
     },
     "references": {
       "items": {

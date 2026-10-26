@@ -13,3 +13,6 @@ build/
 *.sqlite*
 .coverage
 htmlcov/
+.env
+.env.*
+!.env.example

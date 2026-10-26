@@ -16,23 +16,43 @@ def init_config(path: Path | None = None) -> Path:
     if target.exists():
         raise ConfigurationError(f"Configuration already exists: {target}")
     defaults = {"database_path": str(Settings().database_path), "log_level": "INFO"}
-    target.write_text(tomli_w.dumps(defaults), encoding="utf-8")
+    try:
+        with target.open("x", encoding="utf-8") as stream:
+            stream.write(tomli_w.dumps(defaults))
+    except FileExistsError as exc:
+        raise ConfigurationError(f"Configuration already exists: {target}") from exc
     return target
 
 
 def load_config(path: Path) -> Settings:
+    """Load file settings with environment values overriding the file."""
+    return load_settings(path)
+
+
+def load_settings(
+    config_path: Path | None = None, *, cli_overrides: dict[str, object] | None = None
+) -> Settings:
+    """Resolve defaults < TOML file < environment < explicit CLI values."""
+    configured_path = os.environ.get("CHINESCAN_CONFIG_PATH")
+    target = config_path or Path(configured_path or default_config_path())
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        if (config_path is not None or configured_path is not None) and not target.is_file():
+            raise OSError("selected config file does not exist")
+        data = tomllib.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
         for key in Settings.model_fields:
             env_name = f"CHINESCAN_{key.upper()}"
             if env_name in os.environ:
                 data[key] = os.environ[env_name]
-        return Settings(**data)
-    except (OSError, ValueError) as exc:
-        raise ConfigurationError(f"Unable to load configuration: {exc}") from exc
+        data.update(cli_overrides or {})
+        return Settings(_env_file=None, **data)
+    except (OSError, ValueError, TypeError) as exc:
+        raise ConfigurationError(
+            f"Unable to load configuration ({type(exc).__name__}); "
+            "check the file and setting values."
+        ) from exc
 
 
 def validate_config(path: Path) -> Settings:
-    if not path.exists():
+    if not path.is_file():
         raise ConfigurationError(f"Configuration does not exist: {path}")
     return load_config(path)

@@ -1,0 +1,15 @@
+title: Windows failed logon event
+id: fixture-windows-4625
+status: test
+description: Candidate failed logon event from an exported Windows event record.
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4625
+  condition: selection
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1110

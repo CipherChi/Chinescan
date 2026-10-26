@@ -1,0 +1,1 @@
+Ordinary benign fixture with no scanner marker.

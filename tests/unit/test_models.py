@@ -1,13 +1,15 @@
 import pytest
 from pydantic import ValidationError
 
-from chinescan.core.models import Finding, Severity, Target
+from chinescan.core.models import Confidence, Finding, FindingCategory, Severity, Target
 
 
 def test_finding_is_versioned_and_serializable() -> None:
     finding = Finding(title="Weak setting", fingerprint="abc", severity=Severity.HIGH)
     assert finding.schema_version == "1.0"
     assert finding.model_dump(mode="json")["severity"] == "high"
+    assert finding.model_dump(mode="json")["category"] == FindingCategory.SAST.value
+    assert finding.model_dump(mode="json")["confidence"] == Confidence.POSSIBLE.value
 
 
 def test_finding_requires_fingerprint() -> None:

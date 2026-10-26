@@ -1,0 +1,40 @@
+image: python:3.12.15-slim-trixie@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
+
+stages:
+  - quality
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
+
+cache:
+  key:
+    files:
+      - uv.lock
+  paths:
+    - .cache/uv/
+
+quality:
+  stage: quality
+  timeout: 20 minutes
+  before_script:
+    - python -m pip install --no-cache-dir uv==0.13.5
+    - uv sync --locked --extra dev
+  script:
+    - uv run --locked --extra dev ruff check .
+    - uv run --locked --extra dev ruff format --check .
+    - uv run --locked --extra dev mypy --strict chinescan
+    - uv run --locked --extra dev pytest --cov=chinescan --cov-report=term --cov-report=xml:coverage.xml --cov-fail-under=80
+    - uv run --locked --extra dev pip-audit --skip-editable
+    - uv run --locked --extra dev bandit --severity-level medium -r chinescan
+  coverage: '/TOTAL\s+\d+\s+\d+\s+(\d+%)/'
+  artifacts:
+    when: always
+    expire_in: 7 days
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
+# Container builds belong in a runner-specific job with a pinned Docker executor
+# and an approved registry policy. The GitHub workflow currently owns image scanning.

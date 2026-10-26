@@ -1,0 +1,3 @@
+SystemTime,EventID,Computer,TargetUserName,IpAddress,ProcessName,ProcessCommandLine,EventOutcome
+2026-10-25T10:09:00Z,4625,WORKSTATION-1,alice,203.0.113.5,, ,failure
+2026-10-25T10:10:00Z,4688,WORKSTATION-1,bob,,powershell.exe,powershell.exe -enc QUJD,success

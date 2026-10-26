@@ -1,0 +1,7 @@
+rules:
+  - id: chinescan.local.synthetic-eval
+    languages:
+      - python
+    message: Synthetic fixture marker for local integration verification.
+    severity: ERROR
+    pattern: eval(...)

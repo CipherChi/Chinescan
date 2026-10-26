@@ -10,4 +10,21 @@ Configuration defaults to `~/.config/chinescan/config.toml`; SQLite defaults to 
 
 ## ADR-003: Versioned generic records
 
-All canonical records inherit a shared `schema_version`. Finding fingerprints are required and use the future stable tuple described in `DEDUPLICATION.md`. SQLite stores JSON-compatible typed payloads behind a repository protocol.
+All canonical records inherit a shared `schema_version`. Code finding fingerprints derive from normalized target, category, rule ID, and location as described in `DEDUPLICATION.md`. SQLite stores JSON-compatible typed payloads behind a repository protocol.
+
+## ADR-004: Local-first code assessment
+
+The built-in heuristic scanner is the default and runs without subprocesses or network access. External SAST, secret, IaC, and dependency adapters are explicit choices, bounded by timeouts, and normalize metadata without source snippets. Semgrep needs a local rules file; Trivy skips database/policy updates and remote lookups. pip-audit and npm audit require `--allow-network-audits` because they submit dependency metadata to upstream advisory services. No scanner package dependency was added; adapters use installed CLIs through argument arrays with shell execution disabled.
+
+## ADR-005: Safe local Sigma rule parsing
+
+Add PyYAML for local Sigma YAML rule files. Its `safe_load` APIs construct only standard YAML values and reject arbitrary Python object constructors, which fits untrusted local rule content better than a hand-written YAML parser. ChineScan bounds file size and rule count and evaluates a documented condition/selector subset without `eval`; it does not claim full Sigma compatibility. See the [PyYAML safe loading documentation](https://pyyaml.org/wiki/PyYAMLDocumentation).
+
+## ADR-006: Ephemeral malware static triage
+
+Phase 5 initially implements only bounded static analysis of one local regular file. Hashes and
+candidate metadata are returned to the caller but not stored in SQLite; sample bytes are never
+copied or executed. Indicator values are omitted from summaries unless explicitly requested.
+YARA and ClamAV are optional local subprocesses with no shell, restricted environment, output
+caps, and timeouts. This avoids claiming a malware intake/storage system before encryption,
+access control, retention, and audit requirements have been designed and implemented.

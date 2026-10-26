@@ -1,0 +1,424 @@
+"""Fixture-driven tests for local log parsing, detections, correlation, and persistence."""
+
+import gzip
+import io
+import json
+import tarfile
+import zipfile
+from datetime import UTC, datetime
+from pathlib import Path
+
+from typer.testing import CliRunner
+
+from chinescan.cli.app import app
+from chinescan.core.models.common import Severity
+from chinescan.core.models.investigation import Event, Indicator
+from chinescan.log_analysis import detections as detections_module
+from chinescan.log_analysis import ingest as ingest_module
+from chinescan.log_analysis import ioc_matching as ioc_module
+from chinescan.log_analysis.detections import (
+    SigmaRule,
+    load_sigma_rules,
+    run_builtin_detections,
+    run_sigma_rules,
+)
+from chinescan.log_analysis.ingest import ingest_path
+from chinescan.log_analysis.ioc_matching import correlate_iocs, load_iocs
+from chinescan.log_analysis.normalization import normalize_record
+from chinescan.log_analysis.parsers import parse_log_data
+from chinescan.log_analysis.service import LogAnalysisService
+
+runner = CliRunner()
+FIXTURE_ROOT = Path(__file__).parents[2] / "fixtures" / "sample-logs"
+
+
+def test_fixture_parsers_and_builtin_detections() -> None:
+    ingested = ingest_path(FIXTURE_ROOT)
+    assert ingested.source_count == 9
+    assert not ingested.errors
+    assert len(ingested.events) == 21
+    sources = {event.source for event in ingested.events}
+    assert {
+        "linux_auth",
+        "syslog",
+        "web_access",
+        "windows_event_export",
+        "cloud_audit",
+        "cef",
+        "leef",
+    } <= sources
+    assert sum(event.kind == "authentication_failure" for event in ingested.events) == 5
+    assert any(event.kind == "4625" for event in ingested.events)
+    cloud_events = [event for event in ingested.events if event.source == "cloud_audit"]
+    assert len(cloud_events) == 3
+    assert {event.source_ip for event in cloud_events} == {
+        "198.51.100.25",
+        "198.51.100.26",
+        "198.51.100.27",
+    }
+    assert any(event.process == "powershell.exe" for event in ingested.events)
+    assert any(event.url == "/search" for event in ingested.events)
+    alerts = run_builtin_detections(ingested.events)
+    rule_ids = {alert.rule_id for alert in alerts}
+    assert {
+        "CHINESCAN-AUTH-001",
+        "CHINESCAN-AUTH-002",
+        "CHINESCAN-PRIV-001",
+        "CHINESCAN-WEB-001",
+        "CHINESCAN-PS-001",
+        "CHINESCAN-LATERAL-001",
+        "CHINESCAN-NET-001",
+    } <= rule_ids
+    assert all(alert.severity in Severity for alert in alerts)
+
+
+def test_cef_escaped_headers_spaced_extensions() -> None:
+    data = (
+        rb"CEF:0|Fixture\|Vendor|Firewall|1.0|DENY|Blocked a \| request|9|"
+        rb"suser=Jane Doe src=198.51.100.40 dst=203.0.113.40 "
+        rb"request=/search?q=one\=two msg=Firewall connection denied"
+        b"\n"
+        rb"CEF:0|FixtureVendor|Firewall|1.0|ALLOW|Low-priority \| event|3|"
+    )
+
+    batch = parse_log_data(data, "firewall.cef", "firewall.cef")
+
+    assert not batch.errors
+    assert len(batch.events) == 2
+    event, low_severity = batch.events
+    assert event.summary == "Firewall connection denied"
+    assert event.user == "Jane Doe"
+    assert event.source_ip == "198.51.100.40"
+    assert event.destination_ip == "203.0.113.40"
+    assert event.url == "/search?q=one=two"
+    assert low_severity.summary == "Low-priority | event"
+
+
+def test_cef_with_classic_syslog_prefix_uses_transport_timestamp_and_host() -> None:
+    batch = parse_log_data(
+        b"Jan 18 11:07:53 firewall.example "
+        b"CEF:0|FixtureVendor|Firewall|1.0|DENY|Blocked|8|src=198.51.100.41\n",
+        "firewall.log",
+        "firewall.log",
+    )
+
+    assert not batch.errors
+    assert len(batch.events) == 1
+    event = batch.events[0]
+    assert event.source == "cef"
+    assert event.host == "firewall.example"
+    assert event.source_ip == "198.51.100.41"
+    assert event.occurred_at == datetime(datetime.now(UTC).year, 1, 18, 11, 7, 53, tzinfo=UTC)
+
+
+def test_leef_2_custom_hex_delimiter_and_spaced_values() -> None:
+    data = (
+        b"LEEF:2.0|FixtureVendor|Firewall|1.0|NETWORK_CONNECTION|x5e|"
+        b"src=198.51.100.60^cat=network_connection^usrName=Fixture Analyst^"
+        b"msg=Firewall connection blocked"
+    )
+
+    batch = parse_log_data(data, "firewall.leef", "firewall.leef")
+
+    assert not batch.errors
+    assert len(batch.events) == 1
+    event = batch.events[0]
+    assert event.user == "Fixture Analyst"
+    assert event.source_ip == "198.51.100.60"
+    assert event.summary == "Firewall connection blocked"
+
+
+def test_leef_2_rejects_invalid_delimiter() -> None:
+    batch = parse_log_data(
+        b"LEEF:2.0|Vendor|Product|1.0|event|xZZ|src=198.51.100.1",
+        "invalid.leef",
+        "invalid.leef",
+    )
+    assert not batch.events
+    assert batch.errors == ["invalid.leef:1: malformed or unsupported log line"]
+
+
+def test_sigma_safe_subset_and_ioc_correlation() -> None:
+    events = ingest_path(FIXTURE_ROOT).events
+    rules, rule_errors = load_sigma_rules(FIXTURE_ROOT / "windows-failed-login.yml")
+    assert not rule_errors
+    sigma_alerts, sigma_errors = run_sigma_rules(events, rules)
+    assert not sigma_errors
+    assert len(sigma_alerts) == 1
+    assert sigma_alerts[0].rule_id == "fixture-windows-4625"
+    iocs, ioc_errors = load_iocs(Path(__file__).parents[2] / "fixtures" / "sample-iocs.txt")
+    assert not ioc_errors
+    correlated = correlate_iocs(events, iocs)
+    assert len(correlated.alerts) == 2
+    assert any(event.indicator_matches for event in correlated.events)
+    assert all(indicator.related_events for indicator in correlated.indicators)
+
+
+def test_ioc_json_csv_validation_and_field_matching(tmp_path: Path) -> None:
+    json_path = tmp_path / "indicators.json"
+    json_path.write_text(
+        json.dumps(
+            [
+                {"type": "domain", "value": "example.test"},
+                {"type": "url", "value": "https://EXAMPLE.test/A?x=1#ignored"},
+                {"type": "email", "value": "analyst@example.test"},
+                {"type": "user_agent", "value": "Fixture Agent"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    indicators, errors = load_iocs(json_path)
+    assert not errors
+    event = Event(
+        occurred_at="2026-10-25T10:00:00Z",
+        kind="web_request",
+        summary="Request by analyst@example.test",
+        host="api.example.test",
+        url="https://example.test/A?x=1",
+        user_agent="Fixture Agent/1.0",
+    )
+    correlated = correlate_iocs([event], indicators)
+    assert len(correlated.alerts) == 4
+    assert len(correlated.events[0].indicator_matches) == 4
+
+    csv_path = tmp_path / "hashes.csv"
+    md5 = "0123456789abcdef0123456789abcdef"
+    csv_path.write_text(f"type,value\nmd5,{md5}\n", encoding="utf-8")
+    hash_iocs, hash_errors = load_iocs(csv_path)
+    assert not hash_errors
+    hash_event = normalize_record(
+        {"timestamp": "2026-10-25T10:00:00Z", "event_type": "file", "md5": md5},
+        source="test",
+        raw_ref="hashes.csv:1",
+    )
+    assert correlate_iocs([hash_event], hash_iocs).alerts
+
+
+def test_invalid_ioc_file_is_diagnosed(tmp_path: Path) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text("not-json", encoding="utf-8")
+    indicators, errors = load_iocs(path)
+    assert not indicators
+    assert errors
+
+
+def test_malformed_jsonl_is_skipped_without_losing_valid_events(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.jsonl"
+    path.write_text(
+        '{"timestamp":"2026-10-25T10:00:00Z","message":"valid one"}\n'
+        "{malformed record}\n"
+        '{"timestamp":"2026-10-25T10:00:30Z","message":"bad field","bytes_out":"unknown"}\n'
+        '{"timestamp":"2026-10-25T10:01:00Z","message":"valid two"}\n',
+        encoding="utf-8",
+    )
+    result = ingest_path(path)
+    assert len(result.events) == 2
+    assert len(result.errors) == 2
+    assert ":2:" in result.errors[0]
+    assert ":3:" in result.errors[1]
+
+
+def test_malformed_csv_row_does_not_discard_valid_rows(tmp_path: Path) -> None:
+    path = tmp_path / "events.csv"
+    path.write_text(
+        "timestamp,event_type,bytes_sent\n"
+        "2026-10-25T10:00:00Z,network,not-a-number\n"
+        "2026-10-25T10:01:00Z,network,1024\n",
+        encoding="utf-8",
+    )
+    result = ingest_path(path)
+    assert len(result.events) == 1
+    assert result.events[0].bytes_out == 1024
+    assert len(result.errors) == 1
+
+
+def test_zip_and_gzip_are_read_without_extracting(tmp_path: Path) -> None:
+    log_text = '{"timestamp":"2026-10-25T10:00:00Z","message":"archived event"}\n'
+    archive_path = tmp_path / "input.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("../escaped.jsonl", log_text)
+    zip_result = ingest_path(archive_path)
+    assert len(zip_result.events) == 1
+    assert not (tmp_path.parent / "escaped.jsonl").exists()
+
+    gzip_path = tmp_path / "input.jsonl.gz"
+    gzip_path.write_bytes(gzip.compress(log_text.encode("utf-8")))
+    gzip_result = ingest_path(gzip_path)
+    assert len(gzip_result.events) == 1
+    assert gzip_result.events[0].source == "json"
+
+    tar_path = tmp_path / "input.tar.gz"
+    payload = log_text.encode("utf-8")
+    with tarfile.open(tar_path, "w:gz") as archive:
+        member = tarfile.TarInfo("events/archived.jsonl")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+    tar_result = ingest_path(tar_path)
+    assert len(tar_result.events) == 1
+
+
+def test_archive_decompression_limit_is_enforced(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "oversized.jsonl.gz"
+    path.write_bytes(gzip.compress(b"x" * 100))
+    monkeypatch.setattr(ingest_module, "MAX_FILE_BYTES", 16)
+    result = ingest_path(path)
+    assert not result.events
+    assert len(result.errors) == 1
+
+
+def test_expanded_byte_budget_is_shared_across_archives_and_stops_at_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    payload = b'{"timestamp":"2026-10-25T10:00:00Z","message":"' + b"x" * 2_000 + b'"}\n'
+    paths = [tmp_path / "one.jsonl.gz", tmp_path / "two.jsonl.gz"]
+    for path in paths:
+        path.write_bytes(gzip.compress(payload))
+    monkeypatch.setattr(ingest_module, "MAX_TOTAL_BYTES", len(payload) + 3)
+
+    result = ingest_path(tmp_path)
+
+    assert result.bytes_processed == len(payload)
+    assert len(result.events) == 1
+    assert any("total expanded-byte limit reached" in error for error in result.errors)
+
+
+def test_zip_declared_size_does_not_replace_bounded_stream_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "lying.zip"
+    payload = b"x" * 64
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("event.jsonl", payload)
+    monkeypatch.setattr(ingest_module, "MAX_FILE_BYTES", 16)
+    original = zipfile.ZipFile.infolist
+
+    def infolist_with_false_size(self):
+        infos = original(self)
+        infos[0].file_size = 1
+        return infos
+
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", infolist_with_false_size)
+    result = ingest_path(path)
+    assert not result.events
+    assert result.errors
+
+
+def test_malformed_archive_is_reported_without_raising(tmp_path: Path) -> None:
+    path = tmp_path / "broken.zip"
+    path.write_bytes(b"not a zip archive")
+    result = ingest_path(path)
+    assert not result.events
+    assert result.errors
+
+
+def test_bounded_reader_never_reads_past_limit() -> None:
+    class CountingReader:
+        def __init__(self) -> None:
+            self.read_bytes = 0
+
+        def read(self, size: int = -1) -> bytes:
+            amount = min(size, 100 - self.read_bytes)
+            self.read_bytes += amount
+            return b"x" * amount
+
+    stream = CountingReader()
+    try:
+        ingest_module._read_stream(stream, 10)
+    except ValueError as exc:
+        assert "limit" in str(exc)
+    else:
+        raise AssertionError("limit exhaustion should abort the member")
+    assert stream.read_bytes == 10
+
+
+def test_service_persists_events_alerts_and_sorted_timeline(repository) -> None:
+    result = LogAnalysisService(repository).analyze(
+        FIXTURE_ROOT,
+        rules_path=FIXTURE_ROOT / "windows-failed-login.yml",
+        ioc_path=Path(__file__).parents[2] / "fixtures" / "sample-iocs.txt",
+    )
+    scan = repository.get("scan", result.scan_id)
+    assert scan is not None
+    assert scan["status"] == "complete"
+    assert len(scan["event_ids"]) == result.events
+    assert len(scan["alert_ids"]) == len(result.alerts)
+    entries = [
+        repository.get("timeline_entry", entry_id) for entry_id in scan["timeline_entry_ids"]
+    ]
+    times = [entry["occurred_at"] for entry in entries if entry]
+    assert times == sorted(times)
+    assert repository.get("event", scan["event_ids"][0]) is not None
+    assert repository.get("indicator", "missing") is None
+
+
+def test_logs_cli_summary_and_malformed_partial_exit(tmp_path: Path, monkeypatch) -> None:
+    database = tmp_path / "logs.sqlite3"
+    monkeypatch.setenv("CHINESCAN_DATABASE_PATH", str(database))
+    result = runner.invoke(
+        app,
+        [
+            "logs",
+            str(FIXTURE_ROOT),
+            "--rules",
+            str(FIXTURE_ROOT),
+            "--ioc-file",
+            str(Path(__file__).parents[2] / "fixtures" / "sample-iocs.txt"),
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    summary = json.loads(result.stdout)
+    assert summary["event_count"] == 21
+    assert summary["alert_count"] >= 8
+    assert "203.0.113.5" not in result.stdout
+    assert "fixture-user" not in result.stdout
+
+    malformed = tmp_path / "malformed.jsonl"
+    malformed.write_text("not json\n", encoding="utf-8")
+    partial = runner.invoke(app, ["logs", str(malformed)])
+    assert partial.exit_code == 1
+    assert "Parser or rule warnings: 1" in partial.stderr
+
+
+def test_sigma_yaml_uses_safe_loader(tmp_path: Path) -> None:
+    path = tmp_path / "unsafe.yml"
+    path.write_text("!!python/object/apply:os.system ['echo unsafe']\n", encoding="utf-8")
+    rules, errors = load_sigma_rules(path)
+    assert not rules
+    assert len(errors) == 1
+
+
+def test_normalized_secret_field_is_redacted() -> None:
+    event = normalize_record(
+        {
+            "timestamp": "2026-10-25T10:00:00Z",
+            "event_type": "process_start",
+            "message": "password=fixture-secret",
+            "command_line": "--api-key=fixture-key",
+        },
+        source="test",
+        raw_ref="test.log:1",
+    )
+    assert "fixture-secret" not in event.summary
+    assert "fixture-key" not in event.command_line
+
+
+def test_expensive_rule_and_ioc_comparisons_are_bounded(monkeypatch) -> None:
+    event = normalize_record(
+        {"timestamp": "2026-10-25T10:00:00Z", "event_type": "login"},
+        source="test",
+        raw_ref="test.log:1",
+    )
+    monkeypatch.setattr(detections_module, "MAX_SIGMA_COMPARISONS", 0)
+    rules = [SigmaRule("rule", "Rule", Severity.LOW, {"sel": {}}, "sel")]
+    alerts, errors = run_sigma_rules([event], rules)
+    assert not alerts
+    assert "comparison limit" in errors[0]
+
+    monkeypatch.setattr(ioc_module, "MAX_IOC_COMPARISONS", 0)
+    indicator = Indicator(indicator_id="ioc", kind="domain", value="example.com")
+    result = correlate_iocs([event], [indicator])
+    assert result.events == [event]
+    assert not result.alerts
+    assert "comparison limit" in result.errors[0]

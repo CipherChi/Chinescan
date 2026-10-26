@@ -1,0 +1,3 @@
+{"@timestamp":"2026-10-25T10:12:00Z","event_type":"network_connection","source_ip":"10.0.0.7","destination_ip":"203.0.113.80","direction":"outbound","bytes_sent":125000000,"message":"Outbound transfer"}
+{"@timestamp":"2026-10-25T10:13:00Z","event_type":"file_write","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","file":"/tmp/sample.bin","message":"File write event"}
+{"@timestamp":"2026-10-25T10:14:30Z","event_type":"process_creation","host":"WORKSTATION-1","user":"fixture-user","process":"wmic.exe","command_line":"wmic.exe /node:server process call create notepad.exe","message":"Process creation event"}

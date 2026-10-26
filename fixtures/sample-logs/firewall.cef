@@ -1,0 +1,1 @@
+CEF:0|FixtureVendor|Firewall|1.0|ALLOW|Outbound connection|3|src=198.51.100.50 dst=203.0.113.20 suser=fixture-user request=https://example.test/path

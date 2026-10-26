@@ -20,3 +20,18 @@ def test_future_phase_command_is_stub() -> None:
     result = runner.invoke(app, ["scan"])
     assert result.exit_code == 2
     assert "Phase 3" in result.stderr
+
+
+def test_invalid_cli_selected_config_fails_before_database_creation(tmp_path) -> None:
+    config = tmp_path / "invalid.toml"
+    database = tmp_path / "must-not-exist.sqlite3"
+    config.write_text('log_level = "TRACE"\napi_token = "fixture-secret"\n', encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["--config", str(config), "--database", str(database), "trends", "--days", "1"],
+    )
+
+    assert result.exit_code == 2
+    assert "fixture-secret" not in result.output
+    assert not database.exists()
