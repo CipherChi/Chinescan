@@ -136,4 +136,4 @@ def test_dependency_cli_requires_explicit_network_consent() -> None:
         ["code", str(FIXTURES / "sample-python-project"), "--scanner", "pip-audit"],
     )
     assert result.exit_code == 2
-    assert "--allow-network-audits" in result.output
+    assert "require explicit --allow-network-audits consent" in result.stderr

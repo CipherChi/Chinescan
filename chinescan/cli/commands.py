@@ -149,9 +149,11 @@ def code_scan(
     if "semgrep" in selected and (semgrep_rules is None or not semgrep_rules.is_file()):
         raise typer.BadParameter("--scanner semgrep requires a readable local --semgrep-rules file")
     if {"pip-audit", "npm-audit"}.intersection(selected) and not allow_network_audits:
-        raise typer.BadParameter(
-            "pip-audit and npm-audit require explicit --allow-network-audits consent"
+        typer.echo(
+            "Error: pip-audit and npm-audit require explicit --allow-network-audits consent.",
+            err=True,
         )
+        raise typer.Exit(code=2)
 
     scanners: list[FindingScanner] = []
     for name in selected:

@@ -1,0 +1,14 @@
+title = "Chinescan Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+# These exact paths contain synthetic scanner inputs reviewed as non-credentials.
+# Keep the allowlist narrow so scanning remains enabled for application/config files.
+[allowlist]
+description = "Synthetic positive security-scanner fixtures only"
+paths = [
+  '''(^|/)fixtures/real-scanners/gitleaks-positive/credential\.txt$''',
+  '''(^|/)fixtures/sample-python-project/app\.py$''',
+  '''(^|/)tests/integration/test_real_scanners\.py$''',
+]
