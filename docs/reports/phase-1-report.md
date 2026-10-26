@@ -492,3 +492,17 @@ under `fixtures/real-scanners/gitleaks-positive/credential.txt`,
 database, backup, environment-secret, or investigation-export filenames were found. This pattern
 scan is not a substitute for Gitleaks. Docker, external scanner, and network-backed checks were not
 run.
+
+## Merge verification — 2026-10-26
+
+After resolving the merge of upstream `f06d43a`, checks ran from `C:\src\Chinescan` with Python
+3.12.10 and the existing `.venv\Lib\site-packages` on `PYTHONPATH`. No dependencies were installed.
+
+| Exact command | Exit | Exact result |
+| --- | ---: | --- |
+| `py -3.12 -m ruff check .` | 0 | `All checks passed!` |
+| `py -3.12 -m ruff format --check .` | 0 | `106 files already formatted` |
+| `py -3.12 -m mypy --strict chinescan` | 0 | `Success: no issues found in 43 source files` |
+| `py -3.12 -m pytest --cov=chinescan --cov-report=term-missing --cov-fail-under=80` | 0 | `108 passed, 5 deselected in 22.65s`; total coverage `82.44%`, required 80% reached. |
+| PyYAML parse of `.github/workflows/ci.yml` and `.github/dependabot.yml` | 0 | `YAML parse passed`. |
+| `git diff --check` and `git diff --cached --check` | 0 | Both passed. |

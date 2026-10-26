@@ -57,7 +57,7 @@ jobs:
           go-version: "1.25.0"
           cache: false
 
-      - run: go install github.com/gitleaks/gitleaks/v8@v8.30.1
+      - run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
       # Redact any finding from logs; the scanner receives no write token or secrets.
       - run: "$(go env GOPATH)/bin/gitleaks detect --source . --redact --no-banner"
 
