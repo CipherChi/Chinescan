@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 from contextlib import suppress
+from getpass import getpass
 from pathlib import Path
 
 import typer
@@ -52,10 +53,84 @@ from chinescan.scanners.external import (
     SemgrepScanner,
     TrivyScanner,
 )
+from chinescan.web.app import create_app
+from chinescan.web.auth import CredentialError, create_operator
 
 
 def version() -> None:
     typer.echo(__version__)
+
+
+def _operator_credential_path(path: Path | None) -> Path:
+    selected = (path or Path.home() / ".config" / "chinescan" / "operator.json").expanduser()
+    resolved = selected.resolve(strict=False)
+    if any((parent / ".git").exists() for parent in resolved.parents):
+        raise CredentialError("Operator credentials must be stored outside Git repositories.")
+    return resolved
+
+
+web_app = typer.Typer(help="Start or bootstrap the authenticated loopback dashboard.")
+
+
+@web_app.command("bootstrap")
+def web_bootstrap(
+    username: str = typer.Option(..., prompt=True),
+    credential_file: Path | None = typer.Option(None, "--credential-file"),  # noqa: B008
+) -> None:
+    """Create the one local operator account; passwords are entered without echo."""
+    try:
+        path = _operator_credential_path(credential_file)
+    except CredentialError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    password = getpass("Operator password (12+ characters): ")
+    confirmation = getpass("Confirm operator password: ")
+    if password != confirmation:
+        typer.echo("Passwords do not match.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        create_operator(path, username, password)
+    except CredentialError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"Local operator account created at {path}.")
+
+
+@web_app.command("serve")
+def web_serve(
+    port: int = typer.Option(8765, min=1024, max=65535),
+    credential_file: Path | None = typer.Option(None, "--credential-file"),  # noqa: B008
+    projects_file: Path | None = typer.Option(None, "--projects-file"),  # noqa: B008
+) -> None:
+    """Explicitly start one local dashboard worker on 127.0.0.1."""
+    from uvicorn import run
+
+    settings = _settings()
+    try:
+        credentials = _operator_credential_path(credential_file)
+    except CredentialError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    if not credentials.is_file():
+        typer.echo("No operator account. Run `chinescan web bootstrap` first.", err=True)
+        raise typer.Exit(code=2)
+    from chinescan.web.app import FRONTEND_DIST
+
+    project_config = projects_file or Path.home() / ".config" / "chinescan" / "projects.toml"
+    application = create_app(settings.database_path, credentials, projects_path=project_config)
+    if (FRONTEND_DIST / "index.html").is_file():
+        typer.echo(f"Chinetscan dashboard available at http://127.0.0.1:{port}")
+    else:
+        typer.echo(f"Chinetscan API listening at http://127.0.0.1:{port}")
+        typer.echo("Run `npm run dev` in frontend for the development dashboard.")
+    run(
+        application,
+        host="127.0.0.1",
+        port=port,
+        workers=1,
+        access_log=False,
+        proxy_headers=False,
+    )
 
 
 _cli_config_path: Path | None = None

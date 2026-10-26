@@ -25,6 +25,18 @@ def test_detects_python_and_node_projects() -> None:
     assert any(path.name == "app.py" for path in python_project.source_files)
 
 
+def test_oversized_source_is_reported_as_scan_failure(tmp_path: Path) -> None:
+    project = tmp_path / "large-project"
+    project.mkdir()
+    (project / "large.py").write_bytes(b"x" * 1_000_001)
+    try:
+        detect_project(project)
+    except ScannerError as exc:
+        assert "above the configured 1 MB limit" in str(exc)
+    else:
+        raise AssertionError("Oversized source was silently omitted from the scan.")
+
+
 def test_builtin_scanner_does_not_return_secret_value() -> None:
     findings = BuiltinRuleScanner().scan(FIXTURES / "sample-python-project")
     assert {finding.rule_id for finding in findings} == {

@@ -3,10 +3,10 @@
 Audit date: 2026-10-26
 Repository: `C:\src\Chinescan`
 Scope: initial read-only audit of the combined working tree, followed by local workflow
-hardening implementation and verification on 2026-10-26.
+hardening and the authenticated dashboard Slice 1 implementation and verification on 2026-10-26.
 
-Sections A–I preserve the baseline audit findings and recommendations. Section J records
-the changes that supersede the local-workflow findings in that baseline.
+Sections A–I preserve the initial baseline audit findings and recommendations. Sections J and O
+record later changes that supersede the local-workflow and dashboard findings in that baseline.
 
 ## A. Executive summary
 
@@ -408,3 +408,167 @@ The milestone verdict is **BLOCKED for real-binary verification; test harness an
 The next action requires approval to provision specified scanner binaries and (for Trivy/ClamAV)
 their local databases/signatures, and to select versions for the tools not pinned in current CI. Once
 approved assets are available, run the strict integration group on an egress-isolated worker.
+
+
+## O. Authenticated local dashboard Slice 1 — 2026-10-26
+
+The owner approved FastAPI, Uvicorn, Argon2, React, TypeScript, Vite, and the minimal component/API
+test dependencies for Slice 1. They were installed in the existing `.venv` and `frontend/node_modules`
+using `uv` and npm. `uv.lock` and `frontend/package-lock.json` capture exact dependency resolutions;
+a baseline comparison found no changes to versions of packages already in `uv.lock`.
+
+Implemented `chinescan web bootstrap` and `chinescan web serve`. Bootstrap creates one operator
+account with a no-echo password prompt and Argon2id hash, rejects overwrite, and refuses credential
+paths inside Git repositories. Serving is explicit, fixed to `127.0.0.1`, single-worker, with proxy
+headers and access logging disabled. Sessions are opaque, HttpOnly, SameSite=Strict, expire in 30
+minutes, and are process-local; logout revokes and process restart invalidates them. State-changing
+requests require same-origin validation and CSRF. Login attempts are throttled. Responses include
+security headers and API no-store caching.
+
+The React dashboard serves real overview, paginated scan, and paginated finding data. FastAPI uses
+declared Pydantic request/response schemas. The SQLite read APIs enforce bounds and sort/filter
+allowlists; severity sorting uses the analyst-facing critical-to-info order. Finding responses use
+an explicit allowlist with shared text redaction; raw payloads and target filesystem paths are not
+returned. No CORS middleware, arbitrary path endpoint, file access, background job, assessment
+action, case/report route, malware intake, public binding, or remote deployment setting was added.
+Production static serving and the Vite loopback development proxy use `/api`. Setup, API, and
+security boundaries are described in `README.md`, `docs/DEVELOPMENT.md`, `docs/API.md`,
+`docs/ARCHITECTURE.md`, and `docs/plans/phase-7.md`.
+
+Verification: `115 passed, 5 deselected`, coverage `83.05%`; Ruff and formatting checks passed;
+strict mypy passed for 46 files; `uv lock --check` resolved 76 packages; frontend typecheck passed,
+2 component tests passed, and the Vite production build succeeded. A live loopback HTTP harness
+confirmed static serving, auth denial, sign-in, empty stored overview, and logout revocation.
+Browser-level testing was not performed and no browser binaries were downloaded. `pip-audit` was not
+run because it requires an external advisory query outside the owner's package-download approval.
+
+## P. Authenticated case and report dashboard — 2026-10-26
+
+Slice 2 exposes the existing `CaseWorkflow` through the authenticated same-origin API and React
+interface. It adds bounded case listing and filters, creation from persisted scans, case detail,
+workflow-governed status changes, idempotent supported-record linking, append-only notes, and a
+chronological combined activity/source timeline. The API does not accept author identity labels;
+legacy author labels remain marked unverified. Case detail returns reviewed linked-record summaries
+with redaction rather than raw persistence payloads.
+
+Case JSON/Markdown/HTML reports call the existing redacted report renderer. Existing scan JSON,
+Markdown, HTML, CSV, and SARIF formats are downloadable. Downloads use server-generated names,
+validated IDs and format allowlists, resource limits, and `Content-Disposition: attachment` (including
+HTML). No output filesystem paths are accepted. These additions add no jobs, uploads, external
+services, or public listener configuration. Exact checks and the browser result are recorded in the
+Slice 2 section of `docs/reports/phase-1-report.md`.
+
+## Q. Browser acceptance for dashboard Slices 1 and 2 — 2026-10-26
+
+Added repeatable Playwright Chromium coverage against the production Vite build served by the
+authenticated Python app. The harness seeds synthetic SQLite records and randomly generated
+operator credentials in unique temporary directories, binds services to ephemeral loopback ports,
+and cleans processes and files after each run. It performs no external assessments or uploads.
+
+The browser suite covers protected-data denial, successful and failed sign-in, fixture-backed
+overview/scan/finding list and detail views, case creation from a scan, browser form validation,
+case not-found errors, persisted notes and status, idempotent event linking, timeline activities,
+redacted JSON/Markdown/HTML downloads, HTML attachment disposition, text-only HTML-like evidence,
+keyboard navigation, a 390-pixel viewport, logout, stale-session API denial, and session expiry
+during a protected action. The suite checks the exact expected 401/404 responses and records no
+unexpected application API failures or JavaScript console errors.
+
+Verification passed: Playwright `3 passed`; Python `116 passed, 5 deselected`, coverage `83.28%`;
+Ruff lint and format, strict mypy, Python lock check, frontend typecheck, 5 component tests, production
+build, and `git diff --check` passed. The five deselected Python tests are marked `real_scanner` and
+require external scanner binaries; no external scanner was run. Details and exact command results
+are in `docs/reports/phase-1-report.md`.
+
+The browser run demonstrated one frontend defect: login 401 responses were converted to a
+message-less `UnauthorizedError`, leaving invalid credentials without visible feedback. The API
+client now preserves the login endpoint's safe error detail for the form while retaining the existing
+unauthorized-session handling for protected requests. Browser regression coverage verifies the
+visible invalid-credential error. No other product defects were demonstrated.
+
+## R. Dashboard Slice 3A — local code-assessment jobs — 2026-10-26
+
+The dashboard now starts jobs for operator-configured local projects. A TOML registry supplies a
+stable project ID, display name, and explicit root; the browser receives only the ID/name pair. The
+server validates configured roots against protected database, credential, and registry paths and
+revalidates before execution. A one-thread worker processes one job at a time with four queued slots.
+Jobs persist `queued`, `running`, `succeeded`, `failed`, or restart-reconciled `interrupted` states
+and link a scan only after `CodeScanService` returns persisted result records. The dashboard polls
+active jobs every two seconds, links persisted findings, and routes case creation through the
+existing `CaseWorkflow`.
+
+The API uses the existing session, loopback, origin, and CSRF controls. Requests accept only an
+allowlisted project ID; optional scanners, arguments, commands, environment variables, config paths,
+and network-backed dependency checks are unavailable. The worker uses built-in checks only. The
+scanner reads source without execution and enforces its existing count and byte bounds. Error text is
+fixed/sanitized for non-configuration failures; source and raw logs are not exposed to the browser.
+
+Validation rejects symbolic links and Windows junctions found in configured roots or the project
+tree, and the scanner does not recurse into linked directories or open symlink files. Protected
+application database storage and the operator credential/registry files are excluded. Path checks
+cannot prevent an entry from changing between validation and open, so this is not an OS sandbox.
+Built-in synchronous scanning cannot be safely killed at a deadline; no cancellation or fake timeout
+is presented. Graceful shutdown waits for active work; process loss marks persisted unfinished jobs
+interrupted at the next startup without claiming an external process was killed. Existing scan
+records are saved by separate repository operations, so a persistence error can leave partial records
+without a job scan link.
+
+Verification: Python `123 passed, 5 deselected`, coverage `83.59%`; Ruff lint and format, strict
+mypy, frontend typecheck, 7 component tests, production build, final Playwright `4 passed` in `2.3m`, Python lock
+consistency, and `git diff --check` passed. The five deselected tests require optional external
+scanner executables. No dependencies were installed, scanner assets downloaded, external services
+contacted, or live targets used. Exact commands and outputs are in the Slice 3A section of
+`docs/reports/phase-1-report.md`. A later browser retry had one pre-existing expiry-fixture failure
+because its 15-second session elapsed before Overview loaded on this slow host; an isolated retry
+could not start its local fixture within 60 seconds. The successful complete run still covered the
+new job workflow.
+
+Recommended next stage: define a cancellable/resource-limited worker process boundary and atomic
+publication of scan results before extending dashboard job types.
+
+## S. Dashboard Slice 3A stabilization — 2026-10-26
+
+The earlier expiry failure was a test-isolation/timing problem: the only 15-second session existed
+for the dedicated expiry spec, but that short-lived fixture was started with normal acceptance and
+the expiry flow had to finish the Overview transition before beginning its protected action. The
+server itself continues to expire the session and return 401. The fixture keeps the standard suite
+on an 1,800-second session and the expiry test on a separate server with a genuine 15-second TTL;
+the expiry test now synchronizes on the protected request and server-observed 401 rather than a
+fixed delay. Retries remain disabled. Three consecutive full browser runs passed.
+
+The previous server startup timeout had no stderr because startup diagnostics were unbounded only
+in memory and the harness timed out before emitting them. The cause of that historical instance
+cannot be determined from the captured evidence; it is not classified as a host defect. The fixture
+now bounds stdout/stderr to the last 4,000 characters, reports early process exit and timeout
+context, verifies the `py -3.12` process running from the repository root against an actual HTTP
+401 readiness response, uses an OS-assigned loopback port handed to Uvicorn, and terminates only
+its own process tree (including the Windows Python launcher tree). Partial startup failures clean up
+the owned process and temporary data. No production bypass route was added.
+
+During final stabilization, one startup reproduction printed its loopback URL just after the former
+60-second announcement bound, with empty stderr. The bounded announcement window is now 120 seconds;
+HTTP readiness remains a separate 10-second observable check. A separate production browser test
+snapshot showed the login form still in its `Signing in…` state when the test asserted dashboard
+content. That test now waits for the successful login response and visible Overview heading before
+asserting stored records. Neither change alters session expiry or authentication behavior.
+
+Project protection now excludes the entire active SQLite parent directory (therefore the main DB
+and SQLite sidecars), credential file, and registry automatically. Existing operator
+`protected_paths` remains supported. Project roots and entries are resolved and checked for links or
+junctions where supported, overlap is rejected in either direction, and validation runs at listing,
+submission, and immediately before worker execution. No managed backup/export directory exists in
+this dashboard configuration; reports are generated in memory. The filesystem TOCTOU race remains,
+and validation is not sandbox isolation.
+
+The existing 1 MB per source, 20,000 source-file, and 250 MB aggregate source bounds remain. A
+candidate source above 1 MB previously disappeared from the input silently; it now fails assessment
+explicitly. Queue bound (four waiting jobs), concurrency (one thread), input limits, execution
+duration, and cancellation are distinct: no cancellation or hard execution deadline exists. Graceful
+shutdown waits for active scans; startup reconciliation marks abandoned queued/running jobs
+`interrupted`; a failed scan-result persistence produces a redacted failed job outcome. Thread
+timeouts would not stop scanning, so process isolation and a hard deadline remain a separate design
+change.
+
+The five `tests/integration/test_real_scanners.py` cases are deselected by the default marker
+configuration because they require installed Semgrep, Gitleaks, Trivy, YARA, and ClamAV binaries,
+with Trivy/ClamAV local databases also required. No dependencies, binaries, signature data, or
+external services were installed or contacted.

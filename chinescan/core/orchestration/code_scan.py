@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import re
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -87,13 +89,14 @@ def detect_project(target: Path) -> ProjectProfile:
             if path.suffix.lower() in SOURCE_SUFFIXES and not path.is_symlink():
                 try:
                     size = path.stat().st_size
-                    if size <= MAX_SOURCE_BYTES:
-                        sources.append(path)
-                        total_bytes += size
-                        if len(sources) > MAX_SOURCE_FILES or total_bytes > MAX_TOTAL_SOURCE_BYTES:
-                            raise ScannerError(
-                                "Project exceeds the configured local scan size limits."
-                            )
+                    if size > MAX_SOURCE_BYTES:
+                        raise ScannerError(
+                            "Project contains a source file above the configured 1 MB limit."
+                        )
+                    sources.append(path)
+                    total_bytes += size
+                    if len(sources) > MAX_SOURCE_FILES or total_bytes > MAX_TOTAL_SOURCE_BYTES:
+                        raise ScannerError("Project exceeds the configured local scan size limits.")
                 except OSError:
                     continue
     return ProjectProfile(root=root, kinds=tuple(sorted(kinds)), source_files=tuple(sources))
@@ -279,10 +282,12 @@ class CodeScanService:
         scanners: list[FindingScanner],
         repository: Repository | None = None,
         max_workers: int = 3,
+        repository_lock: threading.RLock | None = None,
     ) -> None:
         self.scanners = scanners
         self.repository = repository
         self.max_workers = max(1, min(max_workers, 8))
+        self.repository_lock = repository_lock
 
     def scan(self, target: Path) -> CodeScanResult:
         profile = detect_project(target)
@@ -321,19 +326,22 @@ class CodeScanService:
         if self.repository is not None:
             target_id = str(uuid.uuid5(uuid.NAMESPACE_URL, os.path.normcase(result.target)))
             target_record = Target(value=result.target, kind="code")
-            self.repository.save("target", target_id, target_record.model_dump(mode="json"))
-            scan_record = Scan(
-                scan_id=scan_id,
-                target_id=target_id,
-                scanner=",".join(scanner_names) or "none",
-                started_at=started,
-                finished_at=finished,
-                status="partial" if failures else "complete",
-                project_types=list(profile.kinds),
-                finding_ids=[finding.finding_id for finding in normalized_findings],
-                failures=failures,
-            )
-            self.repository.save("scan", scan_id, scan_record.model_dump(mode="json"))
-            for finding in normalized_findings:
-                self.repository.save("finding", finding.finding_id, finding.model_dump(mode="json"))
+            with self.repository_lock if self.repository_lock is not None else nullcontext():
+                self.repository.save("target", target_id, target_record.model_dump(mode="json"))
+                scan_record = Scan(
+                    scan_id=scan_id,
+                    target_id=target_id,
+                    scanner=",".join(scanner_names) or "none",
+                    started_at=started,
+                    finished_at=finished,
+                    status="partial" if failures else "complete",
+                    project_types=list(profile.kinds),
+                    finding_ids=[finding.finding_id for finding in normalized_findings],
+                    failures=failures,
+                )
+                self.repository.save("scan", scan_id, scan_record.model_dump(mode="json"))
+                for finding in normalized_findings:
+                    self.repository.save(
+                        "finding", finding.finding_id, finding.model_dump(mode="json")
+                    )
         return result

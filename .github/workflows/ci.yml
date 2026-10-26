@@ -31,13 +31,53 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - run: uv sync --locked --extra dev
+      - run: uv sync --locked --python 3.12 --extra dev
       - run: uv run --locked --extra dev ruff check .
       - run: uv run --locked --extra dev ruff format --check .
       - run: uv run --locked --extra dev mypy --strict chinescan
+      # Optional real_scanner tests require external binaries and local data and remain opt-in.
       - run: uv run --locked --extra dev pytest --cov=chinescan --cov-report=term-missing --cov-fail-under=80
       - run: uv run --locked --extra dev pip-audit --skip-editable
       - run: uv run --locked --extra dev bandit --severity-level medium -r chinescan
+
+  dashboard:
+    name: dashboard build and browser acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # actions/checkout v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      # astral-sh/setup-uv v6.0.0
+      - uses: astral-sh/setup-uv@c7f87aa956e4c323abf06d5dec078e358f6b4d04
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv sync --locked --python 3.12 --extra dev
+
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.22.0"
+          package-manager-cache: false
+
+      - run: npm ci --no-audit
+        working-directory: frontend
+      - run: npm run typecheck
+        working-directory: frontend
+      - run: npm test -- --reporter=dot
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm run test:e2e
+        working-directory: frontend
+        env:
+          CHINESCAN_PYTHON: ${{ github.workspace }}/.venv/bin/python
 
   secrets:
     name: secret scan

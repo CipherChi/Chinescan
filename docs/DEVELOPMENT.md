@@ -30,6 +30,43 @@ uv run chinescan compare BASELINE_SCAN_ID CURRENT_SCAN_ID
 uv run chinescan trends --days 30 --format json
 ```
 
+Dashboard frontend development additionally requires Node.js 22.12+ and npm. The frontend uses
+React, TypeScript, Vite, Vitest, Testing Library, and Playwright; install its locked dependencies
+with `npm ci --no-audit` from `frontend/`. Run the backend explicitly with
+`uv run chinescan web serve` and the development UI with `npm run dev`. Both bind to loopback;
+Vite proxies `/api` to port 8765.
+
+For production browser acceptance, first build the frontend and install Playwright's Chromium
+browser locally (no global package or system browser installation):
+
+```powershell
+cd frontend
+npm ci --no-audit
+npx playwright install chromium
+npm run build
+npm run test:e2e
+```
+
+The Playwright harness launches the production build served by the authenticated Python app on
+an ephemeral loopback port. It creates synthetic SQLite records, a randomly generated temporary
+operator account, and temporary credential/data directories. It does not use the configured
+operator account, personal database, or assessment commands. Temporary server processes and
+fixture data are removed after the run. Traces and screenshots are retained only for failures
+under `frontend/test-results/`; do not commit these generated artifacts. The suite requires
+Python 3.12+ and the project Python environment available to `py -3.12`.
+
+Create the single operator account with `uv run chinescan web bootstrap`. The default credential
+file is under the user profile at `~/.config/chinescan/operator.json`; it contains an Argon2id
+password hash and is created without replacing an existing account. On Windows, protect this file
+through the user's profile ACL; POSIX mode bits do not prove Windows ACL protection. A custom path
+can be supplied with `--credential-file`.
+
+The dashboard uses one Uvicorn worker, volatile sessions, 30-minute expiry, HttpOnly and
+SameSite=Strict cookies, CSRF validation, loopback host/origin checks, and a five-attempt
+per-process login throttle. Logout revokes the current session; process restart invalidates all
+sessions. The included service is plain HTTP with `Secure` cookies disabled. A Secure cookie is
+not sent over ordinary HTTP; local HTTPS termination is not configured in this stage.
+
 Run the CLI with `uv run chinescan --help`. The test suite uses temporary configuration and SQLite files. Do not point tests at personal data. Keep dependency changes in `pyproject.toml` and regenerate `uv.lock` with `uv lock`.
 
 Configuration precedence is explicit root CLI options (`--database`, `--config`), then
@@ -47,7 +84,7 @@ Use `chinescan code <project> --fail-on high` to make a CI job exit with status 
 
 Log analysis reads local exports and bounded archives without extraction or network access. Raw log lines are not persisted; normalized records are retained in the configured SQLite database. The Sigma evaluator supports a safe, documented subset, not the entire Sigma language.
 
-Malware static triage reads one regular file up to 64 MiB, never executes it, and does not copy or persist sample bytes or analysis results. It counts printable strings but never returns their contents. By default, CLI summaries omit indicator values; `--include-indicators` explicitly displays them. YARA rules and ClamAV scanning are opt-in local tools with timeouts; they do not enable a network service or sandbox. This is not malware intake/storage, memory analysis, or dynamic analysis.
+Malware static triage reads one regular file up to 64 MiB, never executes it, and does not copy or persist sample bytes or analysis results. It counts printable strings but never returns their contents. By default, CLI summaries omit indicator values; `--include-indicators` explicitly displays them. YARA rules and ClamAV scanning are opt-in local tools with timeouts; they do not execute samples or enable a malware sandbox. This is not malware intake/storage, memory analysis, or dynamic analysis.
 
 Domain assessment is the sole built-in network posture command. Use it only with explicit ownership or a matching local authorization file. Unit tests mock all domain network operations; do not add live targets to acceptance checks.
 
@@ -64,3 +101,15 @@ bundle at a new path. Verification never migrates or repairs a backup. Restore o
 database file, upgrading that restored copy when its schema is an older supported revision.
 `db retention-plan` is a dry-run preview and never deletes files. Case report output paths must not
 exist already; export does not overwrite prior reports.
+
+The dashboard exposes this same `CaseWorkflow` through authenticated, same-origin API routes. For
+local code-assessment jobs it reads an operator-controlled TOML project registry and runs the
+existing `CodeScanService` with only `BuiltinRuleScanner`; details and path limits are in
+[Project operations](PROJECTS.md).
+Case creation starts from an existing scan; status updates, link validation/idempotency, and
+append-only notes remain enforced by the workflow layer. The UI displays case activity and source
+timelines and downloads redacted JSON, Markdown, or HTML case reports, plus supported scan reports.
+HTML reports are attachments. Evidence and analyst notes are rendered as text, and legacy author
+labels remain unverified. Job requests accept only a stable project ID, and responses contain no
+full local project path. There is no cancellation or safe hard wall-clock timeout for the built-in
+synchronous scan; graceful shutdown waits for active work.

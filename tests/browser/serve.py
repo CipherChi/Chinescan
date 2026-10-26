@@ -1,0 +1,179 @@
+"""Start a production-build dashboard with synthetic data on an ephemeral loopback port."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import secrets
+import signal
+import socket
+import threading
+from datetime import UTC, datetime
+from pathlib import Path
+
+import uvicorn
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from chinescan.core.models.common import Severity
+from chinescan.core.models.finding import Finding
+from chinescan.core.models.investigation import Event, Scan
+from chinescan.core.storage.sqlite import SQLiteRepository
+from chinescan.web.app import create_app
+from chinescan.web.auth import create_operator
+
+
+class WaitForSessionExpiry:
+    """Hold one scan request until the same app reports its browser session expired."""
+
+    def __init__(self, application: ASGIApp) -> None:
+        self.application = application
+        self.scan_waiting = asyncio.Event()
+        self.session_expired = asyncio.Event()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.application(scope, receive, send)
+            return
+        path = scope.get("path")
+        if path == "/api/scans" and scope.get("method") == "GET":
+            self.scan_waiting.set()
+            await self.session_expired.wait()
+            await self.application(scope, receive, send)
+            return
+        if path == "/api/auth/session" and self.scan_waiting.is_set():
+
+            async def observe_expiry(message: Message) -> None:
+                if message["type"] == "http.response.start" and message["status"] == 401:
+                    self.session_expired.set()
+                await send(message)
+
+            await self.application(scope, receive, observe_expiry)
+            return
+        await self.application(scope, receive, send)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", required=True, type=Path)
+    parser.add_argument("--ttl", required=True, type=int)
+    parser.add_argument("--hold-scan-until-expiry", action="store_true")
+    args = parser.parse_args()
+    args.data_dir.mkdir(parents=True, exist_ok=False)
+    database = args.data_dir / "records.sqlite3"
+    credentials = args.data_dir / "operator.json"
+    project = args.data_dir.parent / f"{args.data_dir.name}-approved-project"
+    project.mkdir()
+    (project / "app.py").write_text("eval(user_input)\n", encoding="utf-8")
+    projects_config = args.data_dir / "projects.toml"
+    projects_config.write_text(
+        "[[projects]]\n"
+        'id = "browser-fixture"\n'
+        'name = "Browser fixture"\n'
+        f'root = "{project.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    operator_username = f"browser-{secrets.token_hex(4)}"
+    operator_password = secrets.token_urlsafe(24)
+    create_operator(credentials, operator_username, operator_password)
+
+    repository = SQLiteRepository(database)
+    finding = Finding(
+        finding_id="browser-finding-high",
+        title="Synthetic high severity fixture",
+        description=(
+            '<svg onload="window.__evidenceExecuted=true"> synthetic password=fixture-secret-value'
+        ),
+        severity=Severity.HIGH,
+        fingerprint="browser-fingerprint-high",
+        scanner="fixture-scanner",
+        rule_id="FIXTURE-001",
+        location="synthetic/project.py:17",
+        tags=["browser-test"],
+    )
+    critical = Finding(
+        finding_id="browser-finding-critical",
+        title="Synthetic critical fixture",
+        severity=Severity.CRITICAL,
+        fingerprint="browser-fingerprint-critical",
+        scanner="fixture-scanner",
+        rule_id="FIXTURE-002",
+    )
+    event = Event(
+        event_id="browser-event-fixture",
+        occurred_at=datetime.now(UTC),
+        kind="synthetic-fixture",
+        summary="Synthetic browser event fixture",
+        source="fixture-scanner",
+    )
+    scan = Scan(
+        scan_id="browser-scan-fixture",
+        target_id="synthetic-target-that-must-not-leak",
+        scanner="fixture-scanner",
+        started_at=datetime.now(UTC),
+        finding_ids=[finding.finding_id, critical.finding_id],
+        project_types=["synthetic-python"],
+    )
+    for record_type, record in (
+        ("finding", finding),
+        ("finding", critical),
+        ("event", event),
+        ("scan", scan),
+    ):
+        key = {"finding": "finding_id", "event": "event_id", "scan": "scan_id"}[record_type]
+        repository.save(record_type, str(getattr(record, key)), record.model_dump(mode="json"))
+    repository.close()
+
+    application = create_app(
+        database,
+        credentials,
+        session_ttl_seconds=args.ttl,
+        serve_frontend=True,
+        projects_path=projects_config,
+    )
+    served_application: ASGIApp = application
+    if args.hold_scan_until_expiry:
+        served_application = WaitForSessionExpiry(application)
+    server = uvicorn.Server(
+        uvicorn.Config(
+            served_application,
+            host="127.0.0.1",
+            port=0,
+            log_level="warning",
+            access_log=False,
+            proxy_headers=False,
+        )
+    )
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(128)
+    listener.setblocking(False)
+
+    def stop(_signum: int, _frame: object) -> None:
+        server.should_exit = True
+
+    signal.signal(signal.SIGTERM, stop)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, stop)
+    worker = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+    worker.start()
+    while not server.started and worker.is_alive():
+        threading.Event().wait(0.01)
+    if not server.started:
+        raise RuntimeError("Loopback application failed to start")
+    print(
+        json.dumps(
+            {
+                "url": f"http://127.0.0.1:{listener.getsockname()[1]}",
+                "username": operator_username,
+                "password": operator_password,
+            }
+        ),
+        flush=True,
+    )
+    worker.join()
+
+
+if __name__ == "__main__":
+    main()

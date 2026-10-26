@@ -2,7 +2,7 @@
 
 ## ADR-001: Python package and managed dependencies
 
-Use Python 3.12+, with `uv.lock` as the exact transitive resolution. Typer supplies the typed CLI; Pydantic and pydantic-settings validate records and environment-aware settings; SQLAlchemy and Alembic establish persistence and migration boundaries. `tomli-w` safely serializes initialized TOML rather than interpolating user-controlled values into TOML strings. Pytest/pytest-cov, Ruff, mypy, and pip-audit provide the project checks. The planned pytest `<9` range was widened to `<10` after pip-audit reported PYSEC-2026-1845 against 8.4.2, with 9.0.3 listed as a fix. Later-phase scanner and web dependencies are intentionally excluded.
+Use Python 3.12+, with `uv.lock` as the exact transitive resolution. Typer supplies the typed CLI; Pydantic and pydantic-settings validate records and environment-aware settings; SQLAlchemy and Alembic establish persistence and migration boundaries. `tomli-w` safely serializes initialized TOML rather than interpolating user-controlled values into TOML strings. Pytest/pytest-cov, Ruff, mypy, and pip-audit provide the project checks. The planned pytest `<9` range was widened to `<10` after pip-audit reported PYSEC-2026-1845 against 8.4.2, with 9.0.3 listed as a fix.
 
 ## ADR-002: Local configuration and data defaults
 
@@ -28,3 +28,14 @@ copied or executed. Indicator values are omitted from summaries unless explicitl
 YARA and ClamAV are optional local subprocesses with no shell, restricted environment, output
 caps, and timeouts. This avoids claiming a malware intake/storage system before encryption,
 access control, retention, and audit requirements have been designed and implemented.
+
+## ADR-007: Authenticated loopback dashboard foundation
+
+The approved Slice 1 dashboard uses FastAPI to expose existing SQLite records, Uvicorn as an
+explicit single-worker loopback server, and argon2-cffi for the local operator password hash.
+Opaque session cookies are backed by in-process state so logout revocation is immediate and a
+restart invalidates sessions. React, React DOM, TypeScript, and Vite provide the same-origin UI;
+Vitest, jsdom, and Testing Library cover components. `httpx2` supplies the TestClient transport
+compatible with the resolved Starlette release. Every direct dependency is locked in `uv.lock` or
+`frontend/package-lock.json`. No CORS, TLS terminator, browser binaries, scanner, or job framework
+was added.

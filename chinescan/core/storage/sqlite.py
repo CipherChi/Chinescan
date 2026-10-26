@@ -2,12 +2,23 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast, overload
 
 from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import JSON, Column, MetaData, String, Table, create_engine, inspect, select
+from sqlalchemy import (
+    JSON,
+    Column,
+    MetaData,
+    String,
+    Table,
+    case,
+    create_engine,
+    func,
+    inspect,
+    select,
+)
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.reflection import Inspector
 
@@ -120,6 +131,89 @@ class SQLiteRepository(Repository):
                 select(records.c.payload).where(records.c.record_type == record_type)
             ).all()
         return [dict(row[0]) for row in rows]
+
+    def page_records(
+        self,
+        record_type: str,
+        *,
+        limit: int,
+        offset: int,
+        sort_by: str,
+        descending: bool,
+        filters: dict[str, str] | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Fetch a bounded JSON-record page using a caller-allowlisted field set."""
+        if not 1 <= limit <= 100 or not 0 <= offset <= 100_000:
+            raise ValueError("page bounds are invalid")
+        allowed = {
+            "scan": {"started_at", "status", "scanner"},
+            "finding": {"severity", "title", "scanner", "category"},
+            "case": {"created_at", "updated_at", "status", "severity", "title"},
+        }
+        if sort_by not in allowed.get(record_type, set()):
+            raise ValueError("record sort field is not allowed")
+        conditions = [records.c.record_type == record_type]
+        for field, value in (filters or {}).items():
+            if field not in allowed.get(record_type, set()):
+                raise ValueError("record filter field is not allowed")
+            json_value = records.c.payload[field].as_string()
+            conditions.append(func.lower(json_value) == value.lower())
+        sort_value = records.c.payload[sort_by].as_string()
+        if record_type == "finding" and sort_by == "severity":
+            sort_value = case(
+                (func.lower(sort_value) == "critical", 5),
+                (func.lower(sort_value) == "high", 4),
+                (func.lower(sort_value) == "medium", 3),
+                (func.lower(sort_value) == "low", 2),
+                (func.lower(sort_value) == "info", 1),
+                else_=0,
+            )
+        ordering = sort_value.desc() if descending else sort_value.asc()
+        with self.engine.connect() as connection:
+            total = int(
+                connection.execute(
+                    select(func.count()).select_from(records).where(*conditions)
+                ).scalar_one()
+            )
+            rows = connection.execute(
+                select(records.c.payload)
+                .where(*conditions)
+                .order_by(ordering, records.c.record_id.asc())
+                .limit(limit)
+                .offset(offset)
+            ).all()
+        return [dict(row[0]) for row in rows], total
+
+    @overload
+    def count_records(self, record_type: str, *, group_by: None = None) -> int: ...
+
+    @overload
+    def count_records(self, record_type: str, *, group_by: str) -> dict[str, int]: ...
+
+    def count_records(
+        self, record_type: str, *, group_by: str | None = None
+    ) -> int | dict[str, int]:
+        """Count records or group by an explicitly supported summary field."""
+        allowed_groups = {"finding": {"severity"}, "scan": set()}
+        if group_by is None:
+            with self.engine.connect() as connection:
+                return int(
+                    connection.execute(
+                        select(func.count())
+                        .select_from(records)
+                        .where(records.c.record_type == record_type)
+                    ).scalar_one()
+                )
+        if group_by not in allowed_groups.get(record_type, set()):
+            raise ValueError("record summary field is not allowed")
+        field = func.json_extract(records.c.payload, f"$.{group_by}")
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                select(field, func.count())
+                .where(records.c.record_type == record_type)
+                .group_by(field)
+            ).all()
+        return {str(key): int(cast(Any, count)) for key, count in rows if key is not None}
 
     def close(self) -> None:
         self.engine.dispose()

@@ -506,3 +506,258 @@ After resolving the merge of upstream `f06d43a`, checks ran from `C:\src\Chinesc
 | `py -3.12 -m pytest --cov=chinescan --cov-report=term-missing --cov-fail-under=80` | 0 | `108 passed, 5 deselected in 22.65s`; total coverage `82.44%`, required 80% reached. |
 | PyYAML parse of `.github/workflows/ci.yml` and `.github/dependabot.yml` | 0 | `YAML parse passed`. |
 | `git diff --check` and `git diff --cached --check` | 0 | Both passed. |
+
+## Authenticated dashboard Slice 1 verification — 2026-10-26
+
+Added FastAPI, Uvicorn, argon2-cffi, and the Starlette-compatible `httpx2` API test transport to
+the existing `uv` project environment. Added React/React DOM, Vite, TypeScript, React typings,
+Vitest, jsdom, and Testing Library to `frontend/`. Direct dependencies are recorded in
+`pyproject.toml` and `frontend/package.json`; exact resolutions are recorded in `uv.lock` and
+`frontend/package-lock.json`. A lock comparison confirmed that no previously locked Python package
+version changed; only dashboard dependencies and their transitive packages were added.
+
+| Exact command | Exit | Exact result |
+| --- | ---: | --- |
+| `py -3.12 --version` | 0 | `Python 3.12.10` |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80` | 0 | `115 passed, 5 deselected in 30.36s`; total coverage `83.05%`, required 80% reached. |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m ruff check .` | 0 | `All checks passed!` |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m ruff format --check .` | 0 | `111 files already formatted`. |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m mypy --strict chinescan` | 0 | `Success: no issues found in 46 source files`. |
+| `& .\.venv312\Scripts\uv.exe lock --check` | 0 | `Resolved 76 packages in 2ms`. |
+| `npm ci --no-audit; npm run typecheck; npm test -- --reporter=dot; npm run build` (from `frontend/`) | 0 | Clean lockfile install; TypeScript check passed; `1` Vitest file and `2` tests passed; Vite production build passed (`index.html` 0.47 kB, CSS 17.64 kB, JS 239.27 kB). |
+| `& .\.venv\Scripts\chinescan.exe --help; ... web --help; ... web bootstrap --help; ... web serve --help` | 0 | Help lists explicit `web bootstrap` and `web serve`; server options have no host override. |
+| Live loopback HTTP harness using `uvicorn.Server` on an ephemeral `127.0.0.1` socket | 0 | Served the built production shell; unauthenticated overview returned 401; sign-in set HttpOnly/SameSite=Strict cookie; persisted empty overview returned zero scans/findings; logout revoked access (subsequent request returned 401). Temporary credentials/database were removed. |
+| `git diff --check` | 0 | Passed; Git emitted line-ending conversion notices only. |
+
+The API tests exercise CLI bootstrap and repository-path rejection, protected reads, real SQLite
+summary/detail data, bounded pagination and allowlisted filters/sorts, severity ordering, body and
+validation limits, CSRF rejection, login throttling, host/origin rejection, session expiry, logout
+revocation, new-application session invalidation, and fixed loopback/single-worker startup options.
+The component tests exercise unauthorized login, backend-loaded metrics, and honest empty states.
+Browser-level verification was **NOT RUN**; no browser binaries were downloaded. Domain probes,
+external scanners, and other external services were not run.
+
+`pip-audit` was **NOT RUN** because it queries an external advisory service, outside the approved
+package-download scope. During initial npm package installation, npm also emitted its default
+registry audit output (`0 vulnerabilities`); the final acceptance install used `--no-audit`.
+
+## Chinetscan dashboard Slice 2 verification — 2026-10-26
+
+The authenticated dashboard now exposes persisted cases and report downloads through the existing
+`CaseWorkflow` and reporting renderers. No dependencies were installed or upgraded for Slice 2; the
+existing lockfiles remain consistent.
+
+| Exact command or check | Exit | Actual result |
+| --- | ---: | --- |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80` | 0 | `116 passed, 5 deselected in 194.36s`; total coverage `83.28%`, above 80%. |
+| `& .\\.venv312\\Scripts\\uv.exe run --offline ruff check .` | 0 | `All checks passed!` |
+| `& .\\.venv312\\Scripts\\uv.exe run --offline ruff format --check .` | 0 | `111 files already formatted`. |
+| `$env:PYTHONPATH='C:\\src\\Chinescan;.venv\\Lib\\site-packages'; py -3.12 -m mypy --strict chinescan` | 0 | `Success: no issues found in 46 source files`. |
+| `& .\\.venv312\\Scripts\\uv.exe lock --check` | 0 | `Resolved 76 packages`. |
+| `npm --prefix frontend run typecheck` | 0 | TypeScript project build passed. |
+| `npm --prefix frontend test -- --reporter=dot` | 0 | `2` test files, `5` tests passed (3 new case workflow tests plus the existing 2 dashboard tests). |
+| `npm --prefix frontend run build` | 0 | Vite production build passed; CSS 20.43 kB and JS 248.96 kB (uncompressed). |
+| Temporary live Uvicorn service bound to `127.0.0.1:8765`; HTTPX2 local smoke harness | 0 | Verified production shell, unauthenticated denial, sign-in, scan detail, filtered case listing, create/link/note/status, all case and scan report formats as attachments, logout revocation. Synthetic credentials/database were created under the user temp directory and removed afterward. |
+| `git diff --check` | 0 | Passed; Git emitted line-ending conversion notices only. |
+
+The five deselected tests are marked `real_scanner` by `tests/integration/test_real_scanners.py` and
+are intentionally excluded by `tests/conftest.py`; they require external scanner binaries and
+integration conditions that were not part of this local dashboard verification. No external
+services were contacted.
+
+Browser verification was **NOT PERFORMED**. The in-app browser control was available, but its local
+browser view attach timed out. Checks for installed Chrome, Edge, Firefox, and Chromium executables
+returned none. No browser binary was downloaded. To run the requested full browser smoke, approval is
+needed to install a compatible Chromium-based browser binary and, if the existing browser control
+remains unavailable, a Playwright-compatible browser test runtime and its browser package. The live
+HTTP harness is API verification and is not represented as browser testing.
+
+## Chinetscan dashboard browser acceptance — 2026-10-26
+
+This section supersedes the earlier NOT PERFORMED note above. The user approved only the npm
+registry packages required for `@playwright/test` and Playwright's official Chromium assets. The
+frontend lockfile now resolves `@playwright/test` 1.64.1. `npx playwright install chromium` downloaded
+Chrome for Testing 156.0.8078.4 and the matching Playwright headless shell from Playwright's official
+distribution. No package or browser was installed globally. The `npm install` and clean `npm ci`
+commands both used `--no-audit`.
+
+The browser harness serves the actual built `frontend/dist` from `create_app` using a temporary
+SQLite database containing synthetic scans, findings, and an event. It generates random operator
+credentials under a unique temporary directory, starts two Python services on ephemeral
+`127.0.0.1` ports, uses only loopback requests, and removes the services and temporary directories
+after each run. Credential values, cookies, browser profiles, and Playwright artifacts are not
+tracked. Browser traces and screenshots are configured for failures only; the successful run
+produced no failure artifacts.
+
+| Exact command/check | Exit | Actual result |
+| --- | ---: | --- |
+| `npm install --save-dev @playwright/test --no-audit` (from `frontend/`) | 0 | Added 3 packages; lockfile updated with `@playwright/test` 1.64.1. |
+| `npx playwright install chromium` (from `frontend/`) | 0 | Installed official Chrome for Testing 156.0.8078.4 and matching headless shell. |
+| `npm ci --no-audit` (from `frontend/`) | 0 | Clean lockfile install; added 106 packages. |
+| `npm run test:e2e` (from `frontend/`) | 0 | Chromium: `3 passed` (production dashboard workflow, finding detail/XSS text handling, and a scan request held in flight until session expiry); `34.3s`. No tests skipped. |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80` | 0 | `116 passed, 5 deselected in 96.02s`; total coverage `83.28%`, above 80%. |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m ruff check .` | 0 | `All checks passed!` |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m ruff format --check .` | 0 | `112 files already formatted`. |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m mypy --strict chinescan` | 0 | `Success: no issues found in 46 source files`. |
+| `& .\.venv312\Scripts\uv.exe lock --check` | 0 | `Resolved 76 packages in 60ms`; Python lockfile consistent. |
+| `npm run typecheck` (from `frontend/`) | 0 | `tsc -b --pretty false` passed. |
+| `npm test -- --reporter=dot` (from `frontend/`) | 0 | `2` component-test files and `5` tests passed. Vitest's test timeout was raised to tolerate this host's slow jsdom startup. |
+| `npm run build` (from `frontend/`) | 0 | Production build passed; CSS 20.43 kB, JS 249.11 kB (uncompressed). |
+| `git diff --check` | 0 | Passed; only existing LF-to-CRLF notices were printed. |
+
+The five Python tests deselected by `tests/conftest.py` carry the `real_scanner` marker and require
+external scanner binaries; they were not part of this local browser acceptance. No assessment job,
+external target, advisory service, or external upload was used. The browser suite explicitly checked
+that its intentional pre-login/session-expiry 401s and invalid-scan 404 were the only failed API
+responses, with no unexpected browser console errors or server errors.
+
+**Browser acceptance verdict: PASS** for the requested dashboard Slices 1 and 2 workflows against
+the production frontend and local authenticated backend.
+
+## Dashboard Slice 3A — local code-assessment jobs — 2026-10-26
+
+Implemented an operator TOML project registry, authenticated and CSRF-protected job creation,
+persisted job state, one worker with four waiting slots, startup interruption reconciliation, bounded
+job listing/detail, and a dashboard form/list with two-second polling while active jobs are present.
+The dashboard uses only `BuiltinRuleScanner` through `CodeScanService`; optional engines and
+network-backed dependency checks cannot be requested. Jobs return a scan ID only after the service
+has persisted the scan and result records. The UI opens the persisted scan and finding IDs and uses
+the existing case workflow. Project IDs, names, and roots are operator configured outside the
+browser; API responses omit full paths and raw logs.
+
+Path validation resolves configured roots strictly and excludes the database directory, operator
+credential file, and registry file. It rejects symlinked path components and symlink/junction entries
+found during a preflight tree walk. The existing scanner does not follow directory symlinks and skips
+symlink files. This remains vulnerable to a time-of-check/time-of-use change after validation; it is
+not OS filesystem isolation. Built-in scanning has file-count and byte bounds but no safely
+interruptible wall-clock timeout. Graceful shutdown waits for active work. A restarted server marks
+persisted queued/running jobs interrupted without asserting that an OS process was terminated.
+
+| Exact command | Exit | Result |
+| --- | ---: | --- |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80` | 0 | Final isolated run: `123 passed, 5 deselected in 193.86s`; total coverage `83.59%`, threshold 80% reached. |
+| `& .\.venv\Scripts\ruff.exe check .` | 0 | `All checks passed!` |
+| `& .\.venv\Scripts\ruff.exe format --check .` | 0 | `115 files already formatted`. |
+| `& .\.venv\Scripts\mypy.exe --strict chinescan` | 0 | `Success: no issues found in 47 source files`. |
+| `npm run typecheck` (from `frontend/`) | 0 | TypeScript project check passed. |
+| `npm test` (from `frontend/`) | 0 | `3` test files and `7` component tests passed. |
+| `npm run build` (from `frontend/`) | 0 | Final Vite production build passed; CSS `21.21 kB`, JavaScript `254.67 kB` (uncompressed). |
+| `npm run test:e2e` (from `frontend/`) | 0 | Full run after the case-selection race fix: `4 passed` in `2.3m`, including the complete job/result/case/refresh path and session-expiry coverage. A later run after registry hardening produced `3 passed, 1 failed` because the 15-second expiry fixture expired before the Overview page finished signing in on this slow host. |
+| `& .\.venv312\Scripts\uv.exe lock --check` | 0 | `Resolved 76 packages in 3ms`; no lock changes. |
+| `& .\.venv\Scripts\chinescan.exe web serve --help` | 0 | Help includes `--projects-file`, port, and credential options. |
+| `git diff --check` | 0 | Passed; Git printed existing LF-to-CRLF working-copy notices. |
+
+The five deselected Python tests require real optional scanner binaries. They were not run. No
+dependency was installed, scanner or rules database downloaded, external target contacted, or
+network-backed audit performed. Queue bounds, duplicate active project submission, failed scanner
+and persistence outcomes, auth/CSRF, unknown project, missing/protected roots, symlink rejection,
+restart reconciliation, and no fixture modification have focused backend tests. Browser acceptance
+used only synthetic local fixture source and the existing Playwright installation.
+
+Known limitations: queue depth is fixed at four waiting jobs; there is no cancellation or progress
+percentage; built-in scans have no hard elapsed-time limit; abrupt filesystem changes can race the
+preflight walk; scan writes are existing per-record repository operations rather than a new atomic
+multi-record transaction. This slice does not claim comprehensive security coverage or production
+readiness. Recommended next stage: design and verify a cancellable, resource-limited worker boundary
+with atomic scan-result publication before adding additional assessment types.
+
+The final isolated Playwright retry `npx playwright test -c playwright.config.ts --project=chromium-session-expiry`
+exited 1 before executing tests: the Python dashboard fixture did
+not start within its 60-second harness startup window (no server stderr was emitted). This is an
+harness-level startup timeout with undetermined cause, separate from the 15-second session expiry
+observed in the preceding full-suite rerun. The complete job workflow itself passed in both
+full-suite reruns.
+
+## Dashboard Slice 3A stabilization — 2026-10-26
+
+Root cause separation: the earlier expiry failure happened in the dedicated 15-second session
+fixture while the Overview transition was still in progress. The standard dashboard fixture has its
+own 1,800-second TTL. The existing captured output does not establish why the separate local Python
+fixture failed to announce readiness within 60 seconds; it emitted no stderr, so that event is
+classified as an undiagnosed fixture startup failure, not attributed to the host. No authentication
+bypass, retry, or longer production session lifetime was introduced.
+
+The browser harness now captures bounded diagnostics (last 4,000 characters per output stream),
+checks early process exit, confirms Python 3.12 and repository-root working directory through its
+explicit `py -3.12` launch, uses the server's OS-assigned loopback port, and requires an actual HTTP
+401 from `/api/auth/session` before declaring readiness. One reproduction printed its URL just after
+the previous 60-second announcement bound; the bounded announcement window is now 120 seconds, with
+a separate 10-second HTTP readiness bound. Failed setup and normal teardown terminate only the
+test-owned process tree and remove its temporary data. The existing real 15-second expiry and
+server-side 401 behavior are unchanged; expiry uses observable request/session conditions, not a
+fixed sleep. Playwright retries remain disabled.
+
+A later browser failure snapshot showed the production page still displaying `Signing in…` when the
+test asserted Overview content. The production browser test now waits for a successful login
+response and the visible Overview heading before checking stored records; it does not expand global
+expectation or session timeouts.
+
+Project roots automatically exclude the active SQLite parent directory (database and sidecars),
+operator credentials, and registry. Operator `protected_paths` remains available for additional
+backup/report storage. This dashboard has no managed backup or report/export directory; reports are
+generated in memory. Roots are strictly resolved, link/junction entries are rejected where
+supported, overlap checks work in both directions, and registry/tree checks run again before
+execution. The filesystem check/open race remains and this is not sandbox isolation.
+
+The scanner previously omitted individual source files over 1 MB, which could look like a clean
+result. It now reports that input-limit exhaustion as a scan failure. Existing limits are 1 MB per
+source, 20,000 source files, and 250 MB aggregate source bytes. The queue allows four waiting jobs;
+one worker executes at a time. These are separate from elapsed-time limits and cancellation, neither
+of which exists. Graceful shutdown waits for an active scan. Restart reconciliation marks unfinished
+jobs interrupted but does not prove process termination. Failed scan-result persistence produces a
+sanitized failed job record. A hard deadline needs a worker-process boundary and is outside this
+stabilization.
+
+The five deselected tests are the opt-in tests in `tests/integration/test_real_scanners.py`; they
+require the actual Semgrep, Gitleaks, Trivy, YARA, and ClamAV executables, plus local Trivy/ClamAV
+database assets. These are deliberately not installed or fetched during this run.
+
+| Exact command | Exit | Result |
+| --- | ---: | --- |
+| `set PYTHONPATH=C:\src\Chinescan;.venv\Lib\site-packages&& py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80` | 0 | `126 passed, 5 deselected in 156.59s`; total coverage `83.62%` (80% threshold met). |
+| `.venv\Scripts\ruff.exe check . && .venv\Scripts\ruff.exe format --check .` | 0 | `All checks passed!`; `115 files already formatted`. |
+| `.venv\Scripts\mypy.exe --strict chinescan` | 0 | `Success: no issues found in 47 source files`. |
+| `node_modules\.bin\tsc -b --pretty false` (from `frontend/`) | 0 | TypeScript project check passed. |
+| `node_modules\.bin\vitest run` (from `frontend/`) | 0 | `3` files and `7` tests passed. |
+| `node_modules\.bin\vite build` (from `frontend/`) | 0 | Production build passed; JS `254.67 kB`, CSS `21.21 kB`. |
+| `node_modules\.bin\playwright test -c playwright.config.ts` (from `frontend/`), run 1 | 0 | `4 passed` in `2.4m`; expiry case `33.4s`. |
+| Same complete Playwright command, run 2 | 0 | `4 passed` in `1.4m`; expiry case `24.7s`. |
+| Same complete Playwright command, run 3 | 0 | `4 passed` in `53.6s`; expiry case `20.6s`. |
+| `.venv312\Scripts\uv.exe lock --check` | 0 | `Resolved 76 packages in 4ms`; lock unchanged. |
+| `git diff --check` | 0 | Passed; Git emitted existing LF-to-CRLF working-copy notices. |
+
+No dependencies were installed, no external service was contacted, and no real scanner was run.
+Browser acceptance is qualified to the local synthetic fixture and these three consecutive clean
+suite runs. Worker execution still has no hard deadline or cancellation, and filesystem path checks
+do not provide an OS sandbox.
+
+## Dashboard release verification — 2026-10-26
+
+Current local verification for the stabilized dashboard release scope. The five real-scanner tests
+remain deselected; they require Semgrep, Gitleaks, Trivy, YARA, and ClamAV binaries (and local Trivy
+or ClamAV data where applicable). No real scanner or remote target was used.
+
+| Exact command/check | Exit | Actual result |
+| --- | ---: | --- |
+| `set PYTHONPATH=C:\src\Chinescan;C:\src\Chinescan\.venv\Lib\site-packages && py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80` | 0 | `126 passed, 5 deselected in 160.08s`; total coverage `83.62%`, above 80%. |
+| `.venv\Scripts\ruff.exe check .` | 0 | `All checks passed!` |
+| `.venv\Scripts\ruff.exe format --check .` | 0 | `115 files already formatted` |
+| `.venv\Scripts\mypy.exe --strict chinescan` | 0 | `Success: no issues found in 47 source files` |
+| `.venv312\Scripts\uv.exe lock --check` | 0 | `Resolved 76 packages in 250ms`; Python lock unchanged. |
+| `npm ci --dry-run --no-audit` (from `frontend/`) | 0 | `up to date in 13s`; npm lockfile and manifest are consistent. No packages were installed. |
+| `npm ls --depth=0` (from `frontend/`) | 0 | All 13 declared direct frontend dependencies resolved to the installed versions. |
+| `npm run typecheck` (from `frontend/`) | 0 | `tsc -b --pretty false` passed. |
+| `npm test -- --reporter=dot` (from `frontend/`) | 0 | `3` files and `7` component tests passed. |
+| `npm run build` (from `frontend/`) | 0 | Production build passed; CSS `21.21 kB`, JavaScript `254.67 kB` (uncompressed). |
+| `npm run test:e2e` (from `frontend/`) | 0 | `4 passed` in `1.3m` using local synthetic data and Chromium. |
+| `.venv\Scripts\chinescan.exe web serve --help` | 0 | Confirms explicit startup, one worker on `127.0.0.1`, default port `8765`, and optional credential/project file paths. |
+| `.venv\Scripts\chinescan.exe web bootstrap --help` | 0 | Confirms explicit operator bootstrap and required `--username`; password is entered interactively. |
+| `.venv\Scripts\chinescan.exe code --help` | 0 | Confirms local project target, built-in default scanner, optional scanner selection, and network-audit consent flag. |
+| `.venv\Scripts\chinescan.exe db --help` | 0 | Confirms backup, verify-backup, restore, and retention-plan commands. |
+
+The first browser acceptance attempt failed before tests because the Windows Python launcher did not
+inherit the project environment's Uvicorn dependency. The harness now adds the local Windows
+environment only when using `py`; CI supplies its locked `.venv` interpreter explicitly. The
+complete browser run above passed after that correction. Failure diagnostics omit the harness
+stdout because it contains generated login credentials. `npm ci --no-audit` remains enforced in
+CI; local verification used the already installed dependencies and did not reinstall packages.

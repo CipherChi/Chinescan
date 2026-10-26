@@ -1,9 +1,11 @@
 # Operations and deployment status
 
-ChineScan has no configured production or staging host, image registry, release credentials, or
+Chinetscan has no configured production or staging host, image registry, release credentials, or
 health-check endpoint. The CI container job builds locally for verification and does not publish
-the image. Production deployment is disabled. Docker Compose is a local one-shot CLI runner: its
-default `--help` command exits, and it does not start a service or network listener.
+the image. Public/remote deployment is disabled. The authenticated dashboard is available only
+through the explicit `chinescan web serve` command, which binds one worker to `127.0.0.1`.
+Docker Compose remains a local one-shot CLI runner; its default `--help` command exits and never
+starts the dashboard.
 
 ## Local database backup and restore
 

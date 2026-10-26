@@ -65,6 +65,7 @@ def malware_detonate_stub(
 app.add_typer(malware_app, name="malware")
 
 app.command("domain")(commands.domain_assess)
+app.add_typer(commands.web_app, name="web")
 
 
 def main() -> None:

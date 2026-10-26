@@ -17,6 +17,9 @@ dependencies = [
   "alembic>=1.15,<2",
   "tomli-w>=1.2,<2",
   "pyyaml>=6.0.2,<7",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "argon2-cffi>=23.1,<26",
 ]
 
 [project.optional-dependencies]
@@ -57,4 +60,5 @@ package = true
 [dependency-groups]
 dev = [
     "bandit>=1.9,<2",
+    "httpx2>=2.16.0",
 ]
