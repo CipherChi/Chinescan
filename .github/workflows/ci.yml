@@ -66,6 +66,9 @@ jobs:
 
       - run: npm ci --no-audit
         working-directory: frontend
+      # npm's install-time audit is suppressed above to keep installation separate from review.
+      - run: npm audit --audit-level=moderate
+        working-directory: frontend
       - run: npm run typecheck
         working-directory: frontend
       - run: npm test -- --reporter=dot
@@ -78,6 +81,26 @@ jobs:
         working-directory: frontend
         env:
           CHINESCAN_PYTHON: ${{ github.workspace }}/.venv/bin/python
+
+  windows-b1:
+    name: Windows managed malware worker acceptance
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      # actions/checkout v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      # astral-sh/setup-uv v6.0.0
+      - uses: astral-sh/setup-uv@c7f87aa956e4c323abf06d5dec078e358f6b4d04
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv sync --locked --python 3.12 --extra dev
+      # This suite includes actual Windows Job Object, worker, and synthetic process-tree checks.
+      - run: uv run --locked --extra dev pytest tests/unit/test_managed_malware.py -q
 
   secrets:
     name: secret scan

@@ -572,3 +572,90 @@ The five `tests/integration/test_real_scanners.py` cases are deselected by the d
 configuration because they require installed Semgrep, Gitleaks, Trivy, YARA, and ClamAV binaries,
 with Trivy/ClamAV local databases also required. No dependencies, binaries, signature data, or
 external services were installed or contacted.
+
+## T. Stage A dashboard log-analysis workflow — 2026-10-27
+
+Rechecked the authenticated dashboard, persisted case workflow, job manager, log service, parsers,
+detections, migrations, and browser harness. Existing log analysis already wrote events, alerts,
+timeline entries, and a scan summary into the generic SQLite record table; existing cases already
+supported typed alert/event links. Stage A therefore needed no schema migration or new dependency.
+
+Added an operator-controlled `log-sources.toml` registry and explicit
+`web serve --log-sources-file` selection. Browser job creation accepts only a source ID. Source,
+rule, IOC, credential, registry, database, and operator-protected roots are checked; tree symlinks
+and junctions are rejected when observed. The manager runs one job at a time with four waiting
+slots and persists queued/running/succeeded/partial/failed/interrupted records. Restart reconciliation
+marks abandoned jobs interrupted. Stored results link the actual log scan. Partial outcomes expose
+bounded, path-free diagnostic categories. Existing ingestion remains read-only and archive paths are
+never extracted; its existing file, byte, archive, and event limits remain the actual enforcement.
+
+Authenticated APIs expose source choices, jobs, paginated alerts/events/timeline, source/severity
+filters, and reviewed alert/event detail. Each detail request verifies membership in the owning log
+scan. Raw event references (which can contain local paths) are omitted. The React workspace selects
+sources, starts and polls jobs, reviews partial diagnostics and results, pages/filter lists, creates
+cases, links alerts/events, and uses existing case reports. Browser text rendering preserves HTML-like
+evidence as text. The operator guide documents the detection behavior; built-ins remain narrow
+heuristics, and Sigma remains the implemented safe subset. No network collection, enrichment, or
+upload was added.
+
+The first backend acceptance exposed a possible `raw_ref` leak in a generic serialized event list;
+explicit response allowlists corrected it. The first browser rerun exposed incorrect test expectations
+and report-link ambiguity (case reports coexist with linked scan reports); the test now selects the
+case report explicitly. One component-suite rerun had a slow-host session initialization timeout in
+an existing App test; it had passed earlier in the same turn, and is rerun below. Final exact results
+are captured in the latest Stage A verification section of `docs/reports/phase-1-report.md`.
+
+Remaining limits: the filesystem can change after validation; no OS sandbox, cancellation, or hard
+execution deadline exists; startup reconciliation covers queued/running jobs but cannot prove worker
+termination after abrupt process loss; existing log result writes are separate repository saves and
+may be partial if persistence itself fails; normalized evidence remains sensitive local data. Stage B1
+adds operator-local managed-copy intake and a fixed Windows worker, but does not add authenticated
+malware result routes, browser sample intake, retention/deletion, or record-level access controls.
+Those B2 decisions remain gated on review and approval. Stage C still needs explicit web network-scope
+and authorization approval; Stage D requires controlled profile and binary-readiness assessment.
+
+Roadmap sequence remains: Stage A log-analysis jobs and Stage B1 backend malware work are implemented;
+Stage B2 remains unimplemented and requires approval before authenticated result exposure, browser
+transfers, case links, retention/deletion, or queue shutdown/cancellation controls. Stage C remains
+deferred until web authorization scope and outbound network policy are approved; Stage D requires
+operator profiles and real local binary evidence before any engine is called verified; Stage E follows
+only from operational workflow needs. No Nuclei, nmap, or broad recon adapter is present. Backup
+cutover, destructive retention, multi-user administration, and public deployment remain out of scope.
+
+## U. Stage B1 — backend malware intake and worker foundation — 2026-10-27
+
+Implemented the approved backend-only slice. `malware_managed_directory` must be explicitly
+configured; a protected-path helper includes the project/frontend/reports, database and parent,
+configuration/secrets, operator credentials, malware and log-source registries, and requires callers
+to supply custom config, backup, log-source, report, and other protected roots. The operator TOML registry
+maps IDs to explicit local regular files. Intake rejects links/reparse points, checks a 64 MiB limit
+while copying, compares source identity before and after the copy, generates opaque 256-bit keys,
+uses an exclusive staging file and atomic non-overwriting hard-link publication, and never modifies
+originals. Filesystem races remain possible.
+
+Persisted malware sample, job, analysis/result, and audit records use the existing generic SQLite
+record convention. A new additive Alembic revision adds a partial status index and preserves prior
+records. Sample and analysis identities are separate. Intake writes its three records atomically;
+the copy necessarily publishes first, so a database failure leaves a deliberate unexplained orphan
+for operator review. Backups include metadata/results only. Recovery reconciliation marks missing or
+changed managed objects unavailable and queued/running work interrupted; it does not reconstruct
+bytes from registry originals or delete unexplained objects.
+
+The built-in worker is a fixed child entry point with a 4 KiB server-generated request and static profile. Windows Job Object setup,
+assignment, and queried limits are required before the parent sends the parsing request. The worker
+has a 512 MiB per-process / 768 MiB aggregate memory cap, four-process tree limit, 60-second Job CPU limit, kill-on-close, and
+the parent applies a 60-second wall deadline and 3 MiB pipe/result caps. The environment is minimal,
+shell execution is disabled, and the parent owns all persistence. ZIP central-directory analysis is
+skipped because the standard library parser cannot be bounded by a listing cap; affected results are
+explicitly partial. String and indicator caps similarly emit partial warnings. YARA and ClamAV are
+not enabled or called by this path; installation, configuration, and real-binary-verification
+statuses remain distinct and are recorded as unchecked/not run.
+
+Windows association and synthetic `CreateProcess` child-tree termination are covered separately from
+mocked timeout/output-overflow control-path tests. Children launched through alternate system
+services are not claimed as contained. See `docs/reports/phase-1-report.md` for exact
+acceptance outcomes. These process controls are not filesystem/network sandboxing, managed storage is
+not authenticated chain of custody, no retention/deletion policy exists, and no malware dashboard,
+upload/download, case-link, or access-control routes were added. B2 still needs approval for
+authenticated result disclosure, web queue/shutdown and cancellation policy, retention, case linking,
+UI workflows, and any sample transfer through browser channels.

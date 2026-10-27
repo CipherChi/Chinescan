@@ -26,11 +26,12 @@ from chinescan.core.cases import (
 from chinescan.core.logging.redaction import redact
 from chinescan.core.models.common import Confidence, FindingCategory, Severity
 from chinescan.core.models.finding import Finding
-from chinescan.core.models.investigation import Case, CaseStatus, Scan
+from chinescan.core.models.investigation import Alert, Case, CaseStatus, Event, Scan, TimelineEntry
 from chinescan.core.reporting import ReportingError, render_case_report, render_report, scan_data
 from chinescan.core.storage.sqlite import SQLiteRepository
 from chinescan.web.auth import LoginThrottle, Session, SessionStore, verify_operator
 from chinescan.web.code_jobs import CodeJobManager, ProjectConfigurationError, ProjectRegistry
+from chinescan.web.log_jobs import LogJobManager, LogSourceError, LogSourceRegistry
 
 COOKIE_NAME = "chinescan_session"
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
@@ -139,6 +140,11 @@ class CodeJobCreateRequest(BaseModel):
     project_id: str = Field(min_length=1, max_length=80)
 
 
+class LogJobCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str = Field(min_length=1, max_length=80)
+
+
 class CodeProjectResponse(BaseModel):
     project_id: str
     display_name: str
@@ -163,6 +169,83 @@ class CodeJobPageResponse(BaseModel):
     offset: int
 
 
+class LogSourceResponse(BaseModel):
+    source_id: str
+    display_name: str
+
+
+class LogJobResponse(BaseModel):
+    job_id: str
+    source_id: str
+    source_name: str
+    status: Literal["queued", "running", "succeeded", "partial", "failed", "interrupted"]
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
+    scan_id: str | None
+    event_count: int
+    alert_count: int
+    error_count: int
+    error: str | None
+    diagnostics: list[str] = Field(default_factory=list)
+
+
+class LogJobPageResponse(BaseModel):
+    items: list[LogJobResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class AlertResponse(BaseModel):
+    alert_id: str
+    title: str
+    description: str
+    severity: Severity
+    confidence: Confidence
+    rule_id: str
+    event_ids: list[str]
+    indicator_ids: list[str]
+    mitre_attack_techniques: list[str]
+
+
+class EventResponse(BaseModel):
+    event_id: str
+    occurred_at: datetime
+    kind: str
+    summary: str
+    source: str
+    source_ip: str | None
+    destination_ip: str | None
+    user: str | None
+    host: str | None
+    process: str | None
+    url: str | None
+    event_outcome: str | None
+    mitre_attack_techniques: list[str]
+
+
+class TimelineResponse(BaseModel):
+    items: list[dict[str, Any]]
+    total: int
+    limit: int
+    offset: int
+
+
+class AlertPageResponse(BaseModel):
+    items: list[AlertResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class EventPageResponse(BaseModel):
+    items: list[EventResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 def _loopback_host(host: str) -> bool:
     value = host.strip().lower()
     if value.startswith("["):
@@ -179,6 +262,7 @@ def create_app(
     secure_cookie: bool = False,
     serve_frontend: bool = True,
     projects_path: Path | str | None = None,
+    log_sources_path: Path | str | None = None,
 ) -> FastAPI:
     """Create an application instance; sessions and throttling live in this process."""
     repository = SQLiteRepository(database_path)
@@ -197,13 +281,29 @@ def create_app(
         ],
     )
     jobs = CodeJobManager(repository, db_lock, registry)
+    log_registry = LogSourceRegistry(
+        log_sources_path,
+        [
+            Path(database_path).parent,
+            credentials,
+            Path(projects_path)
+            if projects_path
+            else Path.home() / ".config" / "chinescan" / "projects.toml",
+            Path(log_sources_path)
+            if log_sources_path
+            else Path.home() / ".config" / "chinescan" / "log-sources.toml",
+        ],
+    )
+    log_jobs = LogJobManager(repository, db_lock, log_registry)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         jobs.start()
+        log_jobs.start()
         try:
             yield
         finally:
+            log_jobs.stop()
             jobs.stop()
         repository.close()
 
@@ -212,6 +312,8 @@ def create_app(
     )
     application.state.repository = repository
     application.state.project_registry = registry
+    application.state.log_source_registry = log_registry
+    application.state.log_job_manager = log_jobs
 
     @application.exception_handler(RequestValidationError)
     async def validation_error_handler(_request: Request, exc: RequestValidationError) -> Response:
@@ -390,6 +492,148 @@ def create_app(
         if item is None:
             raise HTTPException(status_code=404, detail="Code assessment job not found.")
         return item
+
+    @application.get("/api/log/sources", response_model=list[LogSourceResponse])
+    def log_sources(_session: Session = Depends(current_session)) -> list[dict[str, str]]:  # noqa: B008
+        return log_registry.entries()
+
+    @application.post("/api/log/jobs", response_model=LogJobResponse, status_code=202)
+    def create_log_job(
+        payload: LogJobCreateRequest,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:  # noqa: B008
+        try:
+            return log_jobs.submit(payload.source_id)
+        except LogSourceError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OverflowError as exc:
+            raise HTTPException(status_code=429, detail="The log analysis queue is full.") from exc
+
+    @application.get("/api/log/jobs", response_model=LogJobPageResponse)
+    def list_log_jobs(
+        _session: Session = Depends(current_session),  # noqa: B008
+        limit: Annotated[int, Query(ge=1, le=100)] = 25,
+        offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+    ) -> dict[str, Any]:
+        items, total = log_jobs.list(limit, offset)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    @application.get("/api/log/jobs/{job_id}", response_model=LogJobResponse)
+    def get_log_job(job_id: str, _session: Session = Depends(current_session)) -> dict[str, Any]:  # noqa: B008
+        item = log_jobs.get(job_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Log analysis job not found.")
+        return item
+
+    def log_scan(scan_id: str) -> Scan:
+        if len(scan_id) > 255:
+            raise HTTPException(status_code=404, detail="Log analysis not found.")
+        with db_lock:
+            raw = repository.get("scan", scan_id)
+        if raw is None:
+            raise HTTPException(status_code=404, detail="Log analysis not found.")
+        scan = Scan.model_validate(raw)
+        if scan.scanner != "chinescan-log-analysis":
+            raise HTTPException(status_code=404, detail="Log analysis not found.")
+        return scan
+
+    @application.get("/api/log/analyses/{scan_id}/alerts", response_model=AlertPageResponse)
+    def log_alerts(
+        scan_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+        limit: Annotated[int, Query(ge=1, le=100)] = 25,
+        offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+        severity: Annotated[str | None, Query(max_length=20)] = None,
+    ) -> dict[str, Any]:
+        if severity and severity not in {item.value for item in Severity}:
+            raise HTTPException(status_code=422, detail="Unsupported severity filter.")
+        scan = log_scan(scan_id)
+        with db_lock:
+            records = repository.get_many("alert", scan.alert_ids)
+        alerts = [Alert.model_validate(records[item]) for item in scan.alert_ids if item in records]
+        if severity:
+            alerts = [x for x in alerts if x.severity.value == severity]
+        alerts.sort(key=lambda x: (x.severity.value, x.title.casefold(), x.alert_id))
+        page = alerts[offset : offset + limit]
+        return {
+            "items": [_alert_summary(x) for x in page],
+            "total": len(alerts),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @application.get("/api/log/analyses/{scan_id}/alerts/{alert_id}", response_model=AlertResponse)
+    def log_alert_detail(
+        scan_id: str,
+        alert_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:  # noqa: B008
+        scan = log_scan(scan_id)
+        if alert_id not in scan.alert_ids:
+            raise HTTPException(status_code=404, detail="Alert not found.")
+        with db_lock:
+            raw = repository.get("alert", alert_id)
+        if raw is None:
+            raise HTTPException(status_code=404, detail="Alert not found.")
+        return _alert_summary(Alert.model_validate(raw))
+
+    @application.get("/api/log/analyses/{scan_id}/events", response_model=EventPageResponse)
+    def log_events(
+        scan_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+        limit: Annotated[int, Query(ge=1, le=100)] = 25,
+        offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+        source: Annotated[str | None, Query(max_length=100)] = None,
+    ) -> dict[str, Any]:
+        scan = log_scan(scan_id)
+        with db_lock:
+            records = repository.get_many("event", scan.event_ids)
+        events = [Event.model_validate(records[item]) for item in scan.event_ids if item in records]
+        if source:
+            events = [x for x in events if x.source.casefold() == source.casefold()]
+        events.sort(key=lambda x: (x.occurred_at, x.event_id), reverse=True)
+        page = events[offset : offset + limit]
+        return {
+            "items": [_event_summary(x) for x in page],
+            "total": len(events),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @application.get("/api/log/analyses/{scan_id}/events/{event_id}", response_model=EventResponse)
+    def log_event_detail(
+        scan_id: str,
+        event_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:  # noqa: B008
+        scan = log_scan(scan_id)
+        if event_id not in scan.event_ids:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        with db_lock:
+            raw = repository.get("event", event_id)
+        if raw is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        return _event_summary(Event.model_validate(raw))
+
+    @application.get("/api/log/analyses/{scan_id}/timeline", response_model=TimelineResponse)
+    def log_timeline(
+        scan_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+        limit: Annotated[int, Query(ge=1, le=100)] = 25,
+        offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+    ) -> dict[str, Any]:
+        scan = log_scan(scan_id)
+        with db_lock:
+            records = repository.get_many("timeline_entry", scan.timeline_entry_ids)
+        timeline = [
+            TimelineEntry.model_validate(records[item])
+            for item in scan.timeline_entry_ids
+            if item in records
+        ]
+        timeline.sort(key=lambda x: (x.occurred_at, x.entry_id), reverse=True)
+        page = timeline[offset : offset + limit]
+        values = [redact(x.model_dump(mode="json")) for x in page]
+        return {"items": values, "total": len(timeline), "limit": limit, "offset": offset}
 
     @application.get("/api/scans", response_model=ScanPageResponse)
     def list_scans(
@@ -705,6 +949,45 @@ def _finding_summary(finding: Finding, *, detail: bool = False) -> dict[str, Any
         value["description"] = finding.description
         value["location"] = finding.location
         value["tags"] = finding.tags
+    redacted = redact(value)
+    assert isinstance(redacted, dict)
+    return redacted
+
+
+def _alert_summary(alert: Alert) -> dict[str, Any]:
+    value = {
+        "alert_id": alert.alert_id,
+        "title": alert.title,
+        "description": alert.description,
+        "severity": alert.severity.value,
+        "confidence": alert.confidence.value,
+        "rule_id": alert.rule_id,
+        "event_ids": alert.event_ids,
+        "indicator_ids": alert.indicator_ids,
+        "mitre_attack_techniques": alert.mitre_attack_techniques,
+    }
+    redacted = redact(value)
+    assert isinstance(redacted, dict)
+    return redacted
+
+
+def _event_summary(event: Event) -> dict[str, Any]:
+    # Raw refs may contain full local paths; browser schemas intentionally omit them.
+    value = {
+        "event_id": event.event_id,
+        "occurred_at": event.occurred_at,
+        "kind": event.kind,
+        "summary": event.summary,
+        "source": event.source,
+        "source_ip": event.source_ip,
+        "destination_ip": event.destination_ip,
+        "user": event.user,
+        "host": event.host,
+        "process": event.process,
+        "url": event.url,
+        "event_outcome": event.event_outcome,
+        "mitre_attack_techniques": event.mitre_attack_techniques,
+    }
     redacted = redact(value)
     assert isinstance(redacted, dict)
     return redacted

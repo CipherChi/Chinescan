@@ -761,3 +761,142 @@ environment only when using `py`; CI supplies its locked `.venv` interpreter exp
 complete browser run above passed after that correction. Failure diagnostics omit the harness
 stdout because it contains generated login credentials. `npm ci --no-audit` remains enforced in
 CI; local verification used the already installed dependencies and did not reinstall packages.
+
+## Dashboard Stage A — authenticated local log-analysis jobs — 2026-10-27
+
+The web server now accepts an operator-selected log-source registry through the explicit
+`--log-sources-file` option (default `~/.config/chinescan/log-sources.toml`). API clients submit
+only a configured source ID. Jobs use `LogAnalysisService` directly with the existing parser,
+normalization, local detection, IOC matching, and persistence path. The manager persists queue and
+terminal states, partial diagnostics, and the actual result scan ID. One worker runs at a time with
+four waiting jobs, and abandoned queued/running jobs reconcile as `interrupted` at startup. No new
+database revision or package dependency was required.
+
+Authenticated result routes expose bounded alert, event, and timeline pages and reviewed alert/event
+details scoped to the selected log scan. Responses omit raw event references and full paths. The
+frontend selects approved sources, starts and polls jobs, shows partial diagnostics, pages and filters
+results, creates cases, links alerts/events, and retains stored records across refresh. The synthetic
+browser fixture includes malformed content and verifies that the job is visibly `partial`; its
+redacted case report still contains available evidence. Original fixture bytes are hash-checked by
+the backend test. No original logs are modified or uploaded.
+
+### Exact verification commands and results
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80` | 0 | `129 passed, 5 deselected in 164.01s`; total coverage `83.32%` (80% threshold met). The five deselected tests require real Semgrep, Gitleaks, Trivy, YARA, and ClamAV assets. |
+| `.venv\Scripts\ruff.exe check .` | 0 | `All checks passed!` |
+| `.venv\Scripts\ruff.exe format --check .` | 0 | `118 files already formatted`. |
+| `.venv\Scripts\mypy.exe --strict chinescan` | 0 | `Success: no issues found in 48 source files`. |
+| `.venv312\Scripts\uv.exe lock --check` | 0 | `Resolved 76 packages`; lock unchanged. |
+| `npm run typecheck` (from `frontend/`) | 0 | `tsc -b --pretty false` passed. |
+| `npm test -- --reporter=dot` (from `frontend/`) | 0 | `3` files and `7` component tests passed on rerun. An earlier rerun had one existing slow-session test timeout while rendering the initial session check; no retries were added. |
+| `npm run build` (from `frontend/`) | 0 | Vite production build passed; JS `264.84 kB`, CSS `22.62 kB` uncompressed. |
+| `npm run test:e2e` (from `frontend/`) | 0 | `5 passed` in `1.8m`, including approved project jobs, the Stage A partial-log workflow, protected reads, redaction, case links/report, refresh, and session expiry. The first run exposed and led to corrections in test expectations/report-link selection; the successful run used no retries. |
+| `npm ci --dry-run --no-audit` (from `frontend/`) | 0 | `up to date in 9s`; no packages installed. |
+| `.venv\Scripts\chinescan.exe web serve --help` | 0 | Help lists `--log-sources-file`; startup remains explicit. |
+| `git diff --check` | 0 | Passed; Git emitted existing LF-to-CRLF working-copy notices. |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest tests/unit/test_log_jobs.py tests/unit/test_web_api.py -q` | 0 | `11 passed in 48.04s`. |
+
+The new tests exercise unknown source rejection, request path/additional-field rejection, unavailable
+and protected roots, queue exhaustion, restart interruption reconciliation, protected unauthenticated
+access, CSRF behavior, path-free API responses, pagination bounds, event case linking, report
+download, and unchanged input hashes. Existing log-analysis tests cover bounded ingestion, compressed
+archive expansion, parser errors, and event limits. A dedicated browser polling-expiry scenario was
+not added; existing browser session-expiry coverage verifies protected action denial and return to
+sign-in. Resource termination is not guaranteed after abrupt process loss, and the worker has no
+cancellation or hard execution deadline. No external scanner, network collector, advisory service,
+or remote target was used.
+
+## Stage B1 backend verification — 2026-10-27
+
+The fixtures were harmless synthetic files only. B1 is backend-only: no web routes, browser uploads,
+case links, downloads, deletion controls, or external services were added. Five tests marked
+`real_scanner` were deselected because they require Semgrep, Gitleaks, Trivy, YARA, and ClamAV
+assets; no real scanner binary was verified or called by B1.
+
+| Exact command/check | Exit | Actual result |
+| --- | ---: | --- |
+| `py -3.12 --version` | 0 | `Python 3.12.10` |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80` | 0 | `149 passed, 5 deselected in 135.87s`; total coverage `82.97%` (80% threshold met). |
+| `.venv\Scripts\ruff.exe check .` | 0 | `All checks passed!` |
+| `.venv\Scripts\ruff.exe format --check .` | 0 | `124 files already formatted` |
+| `.venv\Scripts\mypy.exe --strict chinescan` | 0 | `Success: no issues found in 51 source files` |
+| `.venv312\Scripts\uv.exe lock --check` | 0 | `Resolved 76 packages in 65ms`; lock unchanged. |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 scripts\recovery_acceptance.py` | 0 | Backup/restore drill completed; JSON, Markdown, and HTML reports generated; original database remained intact and restored-only writes stayed divergent. |
+| `git diff --check` | 0 | Passed; Git printed existing LF-to-CRLF working-copy notices. |
+
+Windows test evidence is separated by type. Actual host tests passed for the fixed worker under a
+configured Job Object, persisted analysis through that worker, and termination of a synthetic
+Python parent/child process tree. Mocked tests separately passed timeout, output-overflow, and
+pipe-cleanup control paths. Migration preservation, atomic queue claim, five-slot queue limit,
+bounded intake, source/object mutation detection, publication-failure orphan handling, restart
+reconciliation, and restore with a missing managed object passed in the Python suite.
+
+**Worker guarantees:** On this Windows host, the implementation created and queried a Job Object,
+applied 512 MiB per-process and 768 MiB aggregate committed-memory limits, a four-process tree cap,
+a 60-second Job user CPU-time limit, and kill-on-last-handle-close. It assigned the worker and
+verified assignment before sending the sample path. The parent enforces a 60-second wall deadline,
+3 MiB output/result caps, and termination on timeout or overflow. The fixed child receives a minimal
+environment, no shell, and no persistence responsibility. Non-Windows execution fails closed.
+
+These controls do not restrict filesystem or network access, establish an OS sandbox, protect
+managed files from a process with write access, or prove sample authenticity. Managed storage is not
+authenticated chain of custody. A path/open race remains despite link/reparse checks and source
+identity comparisons. ZIP central-directory parsing is skipped and reported partial; reaching
+string/indicator caps is also partial. A database failure after exclusive object publication leaves
+an unexplained object for operator review; reconciliation never deletes it. Recovery restores
+metadata but never reconstructs missing sample bytes from registry originals. B1 has no retention
+policy, route-level authorization surface, or sample-byte API. Job Object association does not cover
+children launched through every alternate Windows system service; the tree claim covers processes
+Windows associates with this Job Object.
+
+## Stage B1 definition of done
+
+- [x] Explicit local registry, configured managed storage, bounded managed-copy intake, and opaque
+  non-overwriting object publication.
+- [x] Additive Alembic revision, separate sample and analysis records, bounded result/audit records,
+  atomic queue reservation/claim, and metadata-only backup/recovery behavior.
+- [x] Fixed worker entry point with verified Windows Job Object controls, timeout, bounded output,
+  cleanup paths, and fail-closed unsupported-host behavior.
+- [x] Synthetic regression coverage for limits, mutation, publication failure, timeout/output,
+  process-tree termination, migration, restart reconciliation, and missing-object recovery.
+- [x] Operating documentation, audit, and verification report updated.
+- [ ] B2 requires separate approval for authenticated routes, result disclosure, UI/case links,
+  retention/deletion, queue shutdown/cancellation, and any browser transfer of sample bytes.
+
+## Release verification — 2026-10-27
+
+Release candidate includes Stage A log-analysis jobs and the backend-only B1 managed-copy worker.
+No incomplete B2 routes, browser sample transfers, retention/deletion controls, or sandbox guarantees
+are included. The CI workflow now has a scoped Windows worker-acceptance job for actual Job Object
+checks and an explicit frontend dependency audit after `npm ci --no-audit`.
+
+| Exact command/check | Exit | Actual result |
+| --- | ---: | --- |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80 --basetemp=tests/.pytest-tmp-release` | 0 | `149 passed, 5 deselected in 141.70s`; total coverage `82.97%`. The five opt-in tests require real Semgrep, Gitleaks, Trivy, YARA, and ClamAV binaries/assets; none were installed, fetched, or called. |
+| `.venv\Scripts\pytest.exe tests/unit/test_managed_malware.py -q --basetemp=tests/.pytest-tmp-b1` | 0 | `19 passed in 16.39s` on Windows, including actual worker execution and synthetic Job Object process-tree termination. |
+| `.venv\Scripts\ruff.exe check .` | 0 | `All checks passed!` |
+| `.venv\Scripts\ruff.exe format --check .` | 0 | `124 files already formatted`. |
+| `.venv\Scripts\mypy.exe --strict chinescan` | 0 | `Success: no issues found in 51 source files`. |
+| `.venv312\Scripts\uv.exe lock --check` | 0 | `Resolved 76 packages`; lock consistent. |
+| `.venv\Scripts\pip-audit.exe --skip-editable` | 0 | `No known vulnerabilities found`; editable project distribution skipped. |
+| `.venv\Scripts\bandit.exe --severity-level medium -r chinescan` | 0 | No medium/high issues; 12 low-severity findings remain documented in the security review. |
+| `npm ci --dry-run --no-audit` (from `frontend/`) | 0 | `up to date in 9s`; frontend manifest and lock agree. |
+| `npm audit --audit-level=moderate` (from `frontend/`) | 0 | `found 0 vulnerabilities`; same command is now a CI step. |
+| `npm run typecheck` (from `frontend/`) | 0 | TypeScript project check passed. |
+| `npm test -- --reporter=dot` (from `frontend/`) | 0 | 3 test files and 7 component tests passed. |
+| `npm run build` (from `frontend/`) | 0 | Production build passed; JS `264.84 kB`, CSS `22.62 kB` uncompressed. |
+| `npm run test:e2e` (from `frontend/`) | 0 | `5 passed (1.8m)` in Chromium against local synthetic fixtures. |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 scripts\recovery_acceptance.py` | 0 | Backup/restore drill completed; JSON, Markdown, and HTML reports generated; original database remained intact and restored-only writes stayed divergent. |
+| `git diff --check` | 0 | Passed before this release-verification section was added; rerun after final edits. |
+
+An initial full Python run returned 146 passed and 3 failed (with the same five deselected): the
+synthetic child-process tree did not start in one Job Object test, and two backup publication checks
+hit Windows `WinError 5`. The managed-malware suite then passed all 19 tests in isolation, including
+the actual synthetic process-tree check, and the complete sequential rerun passed all 149 selected
+tests. A later diagnostic pair of simultaneous pytest invocations also collided because both used the
+shared `tests/.pytest-tmp` path; those overlapping results were discarded. The browser suite passed on
+its isolated rerun after one session-expiry login timeout during the first run. CI results remain
+pending the exact pushed commit; the new Windows job, secret scan, and container/dependency scans have
+not yet run remotely.

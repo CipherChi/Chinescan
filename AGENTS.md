@@ -13,6 +13,6 @@
   or job controls. Preserve domain authorization, secret redaction, local processing,
   and restrictions on malware execution and external uploads.
 - Domain posture checks require explicit authorization for the target. Keep local-only defaults; do not add network activity without the user's explicit authorization.
-- Malware analysis is static triage only: never execute malware or upload samples. Do not claim malware intake/storage is implemented.
+- Malware analysis is static triage only: never execute samples or upload them. Stage B1 adds an operator-local managed-copy backend; this is not an OS sandbox, authenticated chain of custody, web upload path, or sample download feature.
 - Do not claim Windows POSIX mode bits enforce ACL protections.
 - Run the acceptance commands documented in `docs/plans/phase-1.md` and capture exact results in `docs/reports/phase-1-report.md`.

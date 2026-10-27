@@ -18,5 +18,6 @@ def default_data_path() -> Path:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CHINESCAN_", extra="ignore")
     database_path: Path = Field(default_factory=default_data_path)
+    malware_managed_directory: Path | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     api_token: str | None = Field(default=None, repr=False)

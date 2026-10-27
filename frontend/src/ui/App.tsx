@@ -3,8 +3,9 @@ import { api, setCsrfToken, UnauthorizedError } from '../api';
 import type { Finding, Overview, Page, Scan } from '../types';
 import { CasesWorkspace } from './CasesWorkspace';
 import { CodeJobsWorkspace } from './CodeJobsWorkspace';
+import { LogJobsWorkspace } from './LogJobsWorkspace';
 
-type Section = 'overview' | 'scans' | 'findings' | 'cases' | 'jobs';
+type Section = 'overview' | 'scans' | 'findings' | 'cases' | 'jobs' | 'logs';
 type Detail = { kind: 'scan'; id: string } | { kind: 'finding'; id: string } | null;
 
 function messageOf(error: unknown) {
@@ -86,26 +87,27 @@ export function App() {
   if (!ready) return <CenteredState title="Connecting to Chinetscan" detail="Checking your local session…" />;
   if (!username) return <Login error={error} busy={busy} onSubmit={submitLogin} onRetry={() => window.location.reload()} />;
 
-  const title = section === 'overview' ? 'Overview' : section === 'scans' ? 'Scan history' : section === 'findings' ? 'Findings' : section === 'cases' ? 'Cases' : 'Code assessments';
+  const title = section === 'overview' ? 'Overview' : section === 'scans' ? 'Scan history' : section === 'findings' ? 'Findings' : section === 'cases' ? 'Cases' : section === 'jobs' ? 'Code assessments' : 'Log analysis';
   const nav = (id: Section, label: string, glyph: string) => <button className={`nav-link ${section === id ? 'active' : ''}`} key={id} onClick={() => { setSection(id); setPage(0); setFilter(''); setDetail(null); }}><span className="nav-glyph" aria-hidden="true">{glyph}</span>{label}{id === 'scans' && overview ? <span className="nav-count">{overview.scan_count}</span> : null}</button>;
 
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark" aria-hidden="true"><span>c</span><i /></div><div><strong>Chinetscan</strong><small>LOCAL ANALYST CONSOLE</small></div></div>
       <div className="nav-caption">WORKSPACE</div>
-      <nav aria-label="Main navigation">{nav('overview', 'Overview', '⌂')}{nav('jobs', 'Code assessments', '⌘')}{nav('scans', 'Scans', '⌕')}{nav('findings', 'Findings', '◈')}{nav('cases', 'Cases', '▤')}</nav>
+      <nav aria-label="Main navigation">{nav('overview', 'Overview', '⌂')}{nav('jobs', 'Code assessments', '⌘')}{nav('logs', 'Log analysis', '≋')}{nav('scans', 'Scans', '⌕')}{nav('findings', 'Findings', '◈')}{nav('cases', 'Cases', '▤')}</nav>
       <div className="sidebar-bottom"><div className="local-indicator"><span />LOCAL INSTANCE</div><p>Assessment data stays on this device.</p><div className="profile"><div className="avatar">{username.slice(0, 1).toUpperCase()}</div><div className="profile-name"><strong>{username}</strong><small>Local operator</small></div><button className="icon-button" onClick={logout} disabled={busy} aria-label="Sign out" title="Sign out">↗</button></div></div>
     </aside>
     <main className="main-content">
       <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><b>/</b><strong>{title}</strong></div><div className="topbar-right"><span className="secure-pill"><span>●</span> Loopback secured</span><div className="top-avatar">{username.slice(0, 1).toUpperCase()}</div></div></header>
       <section className="page-content">
-        <div className="page-heading"><div><div className="eyebrow">ANALYST WORKSPACE</div><h1>{title}</h1><p>{section === 'overview' ? 'A clear view of your locally stored assessment activity.' : section === 'scans' ? 'Review completed and partial local assessments.' : section === 'findings' ? 'Triage findings from supported local assessments.' : section === 'cases' ? 'Investigate persisted scans with notes, links, timelines, and reports.' : 'Start and review bounded assessments of operator approved local projects.'}</p></div>{section !== 'overview' && section !== 'cases' && section !== 'jobs' && <div className="list-controls"><label className="filter-control"><span aria-hidden="true">⌕</span><select aria-label={section === 'scans' ? 'Filter scan status' : 'Filter finding severity'} value={filter} onChange={(event) => { setPage(0); setFilter(event.target.value); }}><option value="">All {section === 'scans' ? 'statuses' : 'severities'}</option>{section === 'scans' ? <><option value="complete">Complete</option><option value="partial">Partial</option></> : <>{['critical','high','medium','low','info'].map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}</>}</select></label></div>}</div>
+        <div className="page-heading"><div><div className="eyebrow">ANALYST WORKSPACE</div><h1>{title}</h1><p>{section === 'overview' ? 'A clear view of your locally stored assessment activity.' : section === 'scans' ? 'Review completed and partial local assessments.' : section === 'findings' ? 'Triage findings from supported local assessments.' : section === 'cases' ? 'Investigate persisted scans with notes, links, timelines, and reports.' : section === 'jobs' ? 'Start and review bounded assessments of operator approved local projects.' : 'Analyze operator-approved local exports with bounded parsing and local detections.'}</p></div>{section !== 'overview' && section !== 'cases' && section !== 'jobs' && section !== 'logs' && <div className="list-controls"><label className="filter-control"><span aria-hidden="true">⌕</span><select aria-label={section === 'scans' ? 'Filter scan status' : 'Filter finding severity'} value={filter} onChange={(event) => { setPage(0); setFilter(event.target.value); }}><option value="">All {section === 'scans' ? 'statuses' : 'severities'}</option>{section === 'scans' ? <><option value="complete">Complete</option><option value="partial">Partial</option></> : <>{['critical','high','medium','low','info'].map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}</>}</select></label></div>}</div>
         {error && <div className="alert-error" role="alert"><span>!</span><div><strong>We couldn’t load this view</strong><p>{error}</p></div><button onClick={() => void loadSection(section, page * 20, filter)}>Retry</button></div>}
         {busy && <div className="loading-line" aria-label="Loading"><span /></div>}
         {section === 'overview' && <OverviewPanel data={overview} onScans={() => setSection('scans')} onFindings={() => setSection('findings')} onOpen={(id) => setDetail({ kind: 'scan', id })} />}
         {section === 'scans' && <ScanTable data={scanPage} page={page} onPage={setPage} onOpen={(id) => setDetail({ kind: 'scan', id })} />}
         {section === 'findings' && <FindingTable data={findingPage} page={page} onPage={setPage} onOpen={(id) => setDetail({ kind: 'finding', id })} />}
         {section === 'jobs' && <CodeJobsWorkspace onUnauthorized={signOut} onOpenScan={(id) => { setSection('scans'); setDetail({ kind: 'scan', id }); }} onCreateCase={(id) => { setCaseScanId(id); setSection('cases'); }} />}
+        {section === 'logs' && <LogJobsWorkspace onUnauthorized={signOut} />}
         {section === 'cases' && <CasesWorkspace onUnauthorized={signOut} initialScanId={caseScanId}/>}
       </section>
     </main>

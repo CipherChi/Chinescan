@@ -101,6 +101,7 @@ def web_serve(
     port: int = typer.Option(8765, min=1024, max=65535),
     credential_file: Path | None = typer.Option(None, "--credential-file"),  # noqa: B008
     projects_file: Path | None = typer.Option(None, "--projects-file"),  # noqa: B008
+    log_sources_file: Path | None = typer.Option(None, "--log-sources-file"),  # noqa: B008
 ) -> None:
     """Explicitly start one local dashboard worker on 127.0.0.1."""
     from uvicorn import run
@@ -117,7 +118,13 @@ def web_serve(
     from chinescan.web.app import FRONTEND_DIST
 
     project_config = projects_file or Path.home() / ".config" / "chinescan" / "projects.toml"
-    application = create_app(settings.database_path, credentials, projects_path=project_config)
+    log_config = log_sources_file or Path.home() / ".config" / "chinescan" / "log-sources.toml"
+    application = create_app(
+        settings.database_path,
+        credentials,
+        projects_path=project_config,
+        log_sources_path=log_config,
+    )
     if (FRONTEND_DIST / "index.html").is_file():
         typer.echo(f"Chinetscan dashboard available at http://127.0.0.1:{port}")
     else:

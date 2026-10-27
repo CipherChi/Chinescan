@@ -19,7 +19,7 @@ def test_initial_migration_creates_records_table(tmp_path: Path) -> None:
         engine.dispose()
 
 
-def test_case_workflow_revision_upgrades_existing_records_without_rewrite(tmp_path: Path) -> None:
+def test_malware_backend_revision_upgrades_existing_records_without_rewrite(tmp_path: Path) -> None:
     database = tmp_path / "upgrade.sqlite3"
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", f"sqlite:///{database.as_posix()}")
@@ -39,7 +39,7 @@ def test_case_workflow_revision_upgrades_existing_records_without_rewrite(tmp_pa
 
             assert (
                 MigrationContext.configure(connection).get_current_revision()
-                == "0002_case_workflow"
+                == "0003_malware_backend"
             )
     finally:
         repository.close()

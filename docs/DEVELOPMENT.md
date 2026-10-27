@@ -84,7 +84,7 @@ Use `chinescan code <project> --fail-on high` to make a CI job exit with status 
 
 Log analysis reads local exports and bounded archives without extraction or network access. Raw log lines are not persisted; normalized records are retained in the configured SQLite database. The Sigma evaluator supports a safe, documented subset, not the entire Sigma language.
 
-Malware static triage reads one regular file up to 64 MiB, never executes it, and does not copy or persist sample bytes or analysis results. It counts printable strings but never returns their contents. By default, CLI summaries omit indicator values; `--include-indicators` explicitly displays them. YARA rules and ClamAV scanning are opt-in local tools with timeouts; they do not execute samples or enable a malware sandbox. This is not malware intake/storage, memory analysis, or dynamic analysis.
+Malware static triage reads one regular file up to 64 MiB and never executes it. The `malware analyze` CLI remains ephemeral; the backend-only Stage B1 library supports explicit registry-based managed copies and persists sample metadata, jobs, bounded results, and audit records. Managed sample bytes remain outside database backups. See [Malware backend operations](MALWARE-BACKEND.md) for its required storage configuration, limits, worker controls, recovery, and remaining boundaries. Neither path is a malware sandbox, memory analysis, or dynamic analysis. YARA and ClamAV remain opt-in local tools and are not called by the managed B1 job path.
 
 Domain assessment is the sole built-in network posture command. Use it only with explicit ownership or a matching local authorization file. Unit tests mock all domain network operations; do not add live targets to acceptance checks.
 
@@ -113,3 +113,9 @@ HTML reports are attachments. Evidence and analyst notes are rendered as text, a
 labels remain unverified. Job requests accept only a stable project ID, and responses contain no
 full local project path. There is no cancellation or safe hard wall-clock timeout for the built-in
 synchronous scan; graceful shutdown waits for active work.
+
+Dashboard log jobs use the same authenticated single-worker loopback service. The operator maintains
+an ID-based local source registry with optional local Sigma rules and IOC list paths; browser requests
+cannot submit file paths or detection logic. Alerts, events, and source timelines are paginated and
+scoped to a persisted log scan. Partial ingestion is represented as a partial job with path-free
+diagnostic categories. See the [log-source operator guide](LOG-SOURCES.md) and [API contract](API.md).

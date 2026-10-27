@@ -94,13 +94,14 @@ ordinary HTTP cannot use a Secure cookie. HTTPS termination is not configured or
 this stage. Keep access local and do not put a public proxy in front of this service.
 
 Dashboard APIs expose persisted overview counts, scans, findings, cases, reports, and bounded
-code-assessment jobs. Finding and job detail use reviewed response schemas; raw source, logs, and
-target filesystem paths are not sent to the browser. File browsing, domain checks, and malware
-intake are omitted. Dashboard Slices 1 and 2 provide authenticated overview, scan/finding review,
-case workflows, and report downloads. Stabilized Slice 3A adds approved-project code jobs using
-only built-in checks. Dashboard log jobs, malware intake, domain jobs, cancellation, and a hard
-execution deadline are deferred.
+code-assessment and log-analysis jobs. Log jobs select an operator-configured local source by ID,
+reuse bounded parsers and local detections, and expose persisted alert/event/timeline views with
+case links. Raw source lines and target filesystem paths are not sent to the browser. File browsing,
+domain checks, and malware intake are omitted. The log detection engine supports a constrained
+Sigma subset and is not comprehensive enterprise detection. Dashboard malware intake, domain jobs,
+cancellation, and a hard execution deadline are deferred.
 See [the local dashboard API contract](docs/API.md) for endpoint schemas and pagination rules.
+See [operator log-source configuration](docs/LOG-SOURCES.md) before enabling log jobs.
 
 The dashboard requires one application worker. Sessions are in memory and restart-invalidated;
 the backend listener is explicit and loopback-only, using plain HTTP. Do not put this service behind
@@ -126,6 +127,7 @@ For local backup/restore guidance, upgrade precautions, and current deployment l
 
 - [Dashboard API](docs/API.md)
 - [Approved project operations](docs/PROJECTS.md)
+- [Operator log-source configuration](docs/LOG-SOURCES.md)
 - [Recovery runbook](docs/RECOVERY-RUNBOOK.md)
 - [Deployment and operations guide](docs/DEPLOYMENT.md)
 - [Development and verification guide](docs/DEVELOPMENT.md)

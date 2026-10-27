@@ -1,2 +1,4 @@
 database_path = "~/.local/share/chinescan/chinescan.sqlite3"
 log_level = "INFO"
+# Optional; required before Stage B1 managed malware intake. Choose a dedicated local path.
+# malware_managed_directory = "D:/chinescan-managed-samples"

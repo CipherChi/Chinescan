@@ -1,4 +1,4 @@
-import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan } from './types';
+import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogJob, LogAlert, LogEvent, LogTimeline } from './types';
 
 let csrfToken = '';
 export function setCsrfToken(token: string) { csrfToken = token; }
@@ -46,6 +46,14 @@ export const api = {
   codeJobs: () => request<Page<CodeJob>>('/api/code/jobs?limit=50&offset=0'),
   codeJob: (id: string) => request<CodeJob>(`/api/code/jobs/${encodeURIComponent(id)}`),
   startCodeJob: (project_id: string) => request<CodeJob>('/api/code/jobs', { method: 'POST', body: JSON.stringify({ project_id }) }),
+  logSources: () => request<LogSource[]>('/api/log/sources'),
+  logJobs: () => request<Page<LogJob>>('/api/log/jobs?limit=50&offset=0'),
+  startLogJob: (source_id: string) => request<LogJob>('/api/log/jobs', { method: 'POST', body: JSON.stringify({ source_id }) }),
+  logAlerts: (scan: string, offset = 0, severity = '') => { const query = new URLSearchParams({ limit: '20', offset: String(offset) }); if (severity) query.set('severity', severity); return request<Page<LogAlert>>(`/api/log/analyses/${encodeURIComponent(scan)}/alerts?${query}`); },
+  logAlert: (scan: string, id: string) => request<LogAlert>(`/api/log/analyses/${encodeURIComponent(scan)}/alerts/${encodeURIComponent(id)}`),
+  logEvents: (scan: string, offset = 0, source = '') => { const query = new URLSearchParams({ limit: '20', offset: String(offset) }); if (source) query.set('source', source); return request<Page<LogEvent>>(`/api/log/analyses/${encodeURIComponent(scan)}/events?${query}`); },
+  logEvent: (scan: string, id: string) => request<LogEvent>(`/api/log/analyses/${encodeURIComponent(scan)}/events/${encodeURIComponent(id)}`),
+  logTimeline: (scan: string, offset = 0) => request<Page<LogTimeline>>(`/api/log/analyses/${encodeURIComponent(scan)}/timeline?limit=20&offset=${offset}`),
   cases: (offset = 0, status = '', severity = '') => {
     const query = new URLSearchParams({ limit: '20', offset: String(offset), sort: 'updated_at', order: 'desc' });
     if (status) query.set('status', status); if (severity) query.set('severity', severity);

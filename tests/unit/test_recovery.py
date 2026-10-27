@@ -84,11 +84,11 @@ def test_backup_verify_and_restore_preserve_a_complete_case_recovery_drill(tmp_p
     }
     assert "path" not in json.dumps(manifest).lower()
     verified = verify_backup(bundle)
-    assert verified.verified and verified.migration_revision == "0002_case_workflow"
+    assert verified.verified and verified.migration_revision == "0003_malware_backend"
 
     restored_path = tmp_path / "restored.sqlite3"
     restored = restore_backup(bundle, restored_path, active_database_path=source)
-    assert restored.original_revision == restored.resulting_revision == "0002_case_workflow"
+    assert restored.original_revision == restored.resulting_revision == "0003_malware_backend"
     restored_repository = SQLiteRepository(restored_path)
     try:
         recovered = CaseWorkflow(restored_repository).get_case(original.case_id)
@@ -325,7 +325,7 @@ def test_restore_upgrades_only_the_copy_and_rejects_existing_or_active_destinati
     destination = tmp_path / "restored-legacy.sqlite3"
     restored = restore_backup(bundle, destination, active_database_path=source)
     assert restored.original_revision == "0001_initial"
-    assert restored.resulting_revision == "0002_case_workflow"
+    assert restored.resulting_revision == "0003_malware_backend"
     repo = SQLiteRepository(destination)
     try:
         assert repo.get("case", "legacy-case")["title"] == "Legacy retained"
@@ -374,7 +374,7 @@ def test_unversioned_supported_schema_verifies_read_only_and_migrates_restored_c
     destination = tmp_path / "unversioned-restored.sqlite3"
     restored = restore_backup(bundle, destination)
     assert restored.original_revision is None
-    assert restored.resulting_revision == "0002_case_workflow"
+    assert restored.resulting_revision == "0003_malware_backend"
     repository = SQLiteRepository(destination)
     try:
         assert repository.get("target", "unversioned-target")["value"] == "retained"

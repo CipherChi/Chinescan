@@ -61,6 +61,22 @@ RECORD_MODELS: dict[str, type[BaseModel]] = {
     "target": Target,
     "timeline_entry": TimelineEntry,
 }
+
+
+class MalwareMetadataRecord(BaseModel):
+    """Backup validates malware records as JSON metadata and never includes sample bytes."""
+
+    model_config = {"extra": "allow"}
+
+
+RECORD_MODELS.update(
+    {
+        "malware_sample": MalwareMetadataRecord,
+        "malware_job": MalwareMetadataRecord,
+        "malware_analysis": MalwareMetadataRecord,
+        "malware_audit": MalwareMetadataRecord,
+    }
+)
 RECORD_ID_FIELDS = {
     "alert": "alert_id",
     "authorization_record": "authorization_id",
@@ -71,6 +87,13 @@ RECORD_ID_FIELDS = {
     "scan": "scan_id",
     "timeline_entry": "entry_id",
 }
+RECORD_ID_FIELDS.update(
+    {
+        "malware_sample": "sample_id",
+        "malware_job": "job_id",
+        "malware_analysis": "analysis_id",
+    }
+)
 
 
 class RecoveryError(Exception):

@@ -30,6 +30,44 @@ cross-origin requests, and non-loopback Host/client values are rejected. The API
 filesystem paths in requests, malware intake, domain assessment, database selection, restore, or
 deletion routes.
 
+## Local log-analysis jobs
+
+The operator configures local sources outside the browser in `~/.config/chinescan/log-sources.toml`
+or supplies `chinescan web serve --log-sources-file PATH`. The browser sends only a `source_id`.
+Every route below requires the authenticated session; job creation also requires same-origin and
+CSRF validation.
+
+| Method and path | Contract |
+| --- | --- |
+| `GET /api/log/sources` | Available configured source IDs and display names only. Unsafe, missing, protected, or invalid roots are omitted. |
+| `POST /api/log/jobs` | `{source_id}` starts bounded local analysis; unknown/unavailable source is `422`, full queue is `429`. Additional request fields are rejected. |
+| `GET /api/log/jobs` | Persisted jobs, bounded `limit` 1–100 and `offset` 0–100000. States: `queued`, `running`, `succeeded`, `partial`, `failed`, `interrupted`. |
+| `GET /api/log/jobs/{job_id}` | Persisted state, sanitized error, counts, and optional actual result `scan_id`. |
+| `GET /api/log/analyses/{scan_id}/alerts` | Alerts belonging to that persisted log scan; optional validated `severity`; bounded pagination. |
+| `GET /api/log/analyses/{scan_id}/alerts/{alert_id}` | Reviewed, redacted alert detail. The ID must belong to the given log scan. |
+| `GET /api/log/analyses/{scan_id}/events` | Events belonging to that persisted log scan; optional bounded `source` filter; bounded pagination. Raw references and full paths are omitted. |
+| `GET /api/log/analyses/{scan_id}/events/{event_id}` | Reviewed event detail. The ID must belong to the given log scan. |
+| `GET /api/log/analyses/{scan_id}/timeline` | Persisted source timeline entries with bounded pagination. |
+
+Log-source TOML is operator-controlled. Each source has `id`, `name`, and absolute `root`; optional
+`rules` points to a local Sigma rules directory and optional `iocs` to a local IOC list. Paths are
+validated against the active database directory, credentials, and registry files. Symlinks and
+Windows junctions within the selected tree are rejected where detected. Ingestion is read-only and
+uses existing limits: up to 10,000 files, 25 MB per file, 250 MB aggregate input/expanded data,
+1,000 archive members, 100 MB per archive, and 100,000 events. Archives are never extracted.
+The single worker allows one active job and four waiting jobs. Partial jobs retain available results
+but are explicitly marked `partial` and include an error count; they must not be interpreted as a
+clean analysis. Restart reconciliation marks unfinished jobs `interrupted`. There is no cancellation
+or hard wall-clock deadline. The filesystem can change after validation, so this is not OS sandboxing.
+
+Log alerts are candidate detections. Built-in rules are limited heuristics. The Sigma evaluator
+uses safe YAML loading and supports normalized field aliases, case-insensitive glob matching,
+`contains`, `startswith`, and `endswith`, optional `all` value matching, Boolean `and`/`or`/`not`,
+parentheses, and `all`/`any`/`1 of` selector patterns. It does not support the full Sigma specification,
+timeframes, pipelines, or arbitrary executable logic. Rule/selector work is
+bounded, and unsupported conditions produce diagnostics that make the scan partial. There are no
+network collectors, enrichment requests, or uploads.
+
 ## Approved local code-assessment jobs (Slice 3A)
 
 Projects come from the operator-controlled TOML registry described in [Project operations](PROJECTS.md).

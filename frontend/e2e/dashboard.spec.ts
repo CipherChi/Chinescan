@@ -202,6 +202,44 @@ test('approved project assessment persists findings and creates a case across re
   await expect(page.getByRole('button', { name: /Browser accepted local assessment/ })).toBeVisible();
 });
 
+test('approved local log source produces persisted alerts, events, timeline, case report, and links', async ({ page }) => {
+  await signIn(page);
+  await page.getByRole('button', { name: /Log analysis/ }).click();
+  await page.getByLabel('Approved log source').selectOption('browser-auth');
+  await page.getByRole('button', { name: 'Analyze logs' }).click();
+  const jobRow = page.getByRole('row').filter({ hasText: 'Browser auth fixture' });
+  await expect(jobRow).toContainText('partial', { timeout: 15_000 });
+  await expect(jobRow).toContainText('Some input could not be parsed or normalized.');
+  await expect(page.getByRole('heading', { name: /Alerts \(1\)/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Events \(5\)/ })).toBeVisible();
+  await expect(page.getByText('login failure password=browser-synthetic-secret')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Create case from analysis' }).click();
+  await expect(page.getByText('Case created from this log analysis.')).toBeVisible();
+  const eventLink = page.getByRole('button', { name: 'Link event to case' }).first();
+  await eventLink.click();
+  await expect(page.getByText('Event linked to case.')).toBeVisible();
+  await page.getByRole('button', { name: 'Link alert to case' }).click();
+  await expect(page.getByText('Alert linked to case.')).toBeVisible();
+  await page.getByRole('button', { name: 'Cases', exact: true }).click();
+  await page.getByRole('button', { name: /Log analysis investigation/ }).click();
+  const report = page.getByRole('region', { name: 'Case detail' }).getByRole('link', { name: 'MARKDOWN', exact: true }).first();
+  const href = await report.getAttribute('href');
+  expect(href).toBeTruthy();
+  const response = await page.request.get(`${urls.standard?.url}${href}`);
+  expect(response.status()).toBe(200);
+  expect(response.headers()['content-disposition']).toContain('attachment;');
+  const body = await response.text();
+  expect(body).toContain('Log analysis investigation');
+  expect(body).toContain('login failure');
+  expect(body).not.toContain('browser-synthetic-secret');
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await page.getByRole('button', { name: /Log analysis/ }).click();
+  await expect(page.getByRole('row').filter({ hasText: 'Browser auth fixture' })).toContainText('partial');
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  expect((await page.request.get(`${urls.standard?.url}/api/log/jobs`)).status()).toBe(401);
+});
+
 test('finding detail shows fixture data as text and preserves keyboard navigation', async ({ page }) => {
   await signIn(page);
   await page.keyboard.press('Tab');

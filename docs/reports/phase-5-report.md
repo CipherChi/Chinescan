@@ -74,3 +74,13 @@ and timeout handling; no real signature engine run was performed.
   fixture CLI, and Docker image checks pass.
 - [ ] Safe sample intake and storage remain unimplemented by design and block completion of the
   full Phase 5 definition of done.
+
+## Stage B1 superseding addendum — 2026-10-27
+
+The original report describes the pre-B1 implementation. Stage B1 now adds the approved backend-only
+operator registry, managed-copy intake, persisted malware records, recovery reconciliation, and
+fixed Windows Job Object worker. ZIP central-directory inspection is skipped and reported as partial;
+the earlier claim of bounded ZIP metadata is no longer current. Browser intake/download routes,
+case-link UI, retention/deletion controls, memory analysis, and dynamic analysis remain outside this
+slice. Exact B1 acceptance is recorded in `phase-1-report.md`; backend operations are in
+`../MALWARE-BACKEND.md`.

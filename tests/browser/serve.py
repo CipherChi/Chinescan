@@ -73,6 +73,34 @@ def main() -> None:
         f'root = "{project.as_posix()}"\n',
         encoding="utf-8",
     )
+    log_source = args.data_dir.parent / f"{args.data_dir.name}-approved-logs"
+    log_source.mkdir()
+    (log_source / "auth.jsonl").write_text(
+        "".join(
+            json.dumps(
+                {
+                    "timestamp": f"2026-10-27T10:00:{index:02d}Z",
+                    "event_type": "authentication",
+                    "message": "login failure password=browser-synthetic-secret",
+                    "source_ip": "203.0.113.44",
+                    "user": "browser-analyst",
+                    "outcome": "failure",
+                }
+            )
+            + "\n"
+            for index in range(5)
+        )
+        + "malformed synthetic line\n",
+        encoding="utf-8",
+    )
+    log_sources_config = args.data_dir / "log-sources.toml"
+    log_sources_config.write_text(
+        "[[sources]]\n"
+        'id = "browser-auth"\n'
+        'name = "Browser auth fixture"\n'
+        f'root = "{log_source.as_posix()}"\n',
+        encoding="utf-8",
+    )
     operator_username = f"browser-{secrets.token_hex(4)}"
     operator_password = secrets.token_urlsafe(24)
     create_operator(credentials, operator_username, operator_password)
@@ -130,6 +158,7 @@ def main() -> None:
         session_ttl_seconds=args.ttl,
         serve_frontend=True,
         projects_path=projects_config,
+        log_sources_path=log_sources_config,
     )
     served_application: ASGIApp = application
     if args.hold_scan_until_expiry:

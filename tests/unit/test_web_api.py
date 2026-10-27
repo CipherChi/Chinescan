@@ -1,3 +1,4 @@
+import hashlib
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -126,6 +127,88 @@ def test_protected_reads_and_paginated_real_records(tmp_path):
     scan_detail = client.get("/api/scans/scan-1").json()
     assert "target_id" not in scan_detail
     assert scan_detail["finding_ids"] == ["finding-1", "finding-2"]
+
+
+def test_authenticated_log_job_results_case_links_and_read_only_source(tmp_path, request):
+    source = tmp_path / "approved-logs"
+    source.mkdir()
+    log_file = source / "auth.jsonl"
+    log_file.write_text(
+        '{"timestamp":"2026-10-27T10:00:00Z","event_type":"authentication",'
+        '"message":"login failure password=synthetic-secret", "source_ip":"203.0.113.10",'
+        '"user":"analyst", "outcome":"failure"}\n',
+        encoding="utf-8",
+    )
+    original_hash = hashlib.sha256(log_file.read_bytes()).hexdigest()
+    log_config = tmp_path / "log-sources.toml"
+    log_config.write_text(
+        f'[[sources]]\nid = "auth"\nname = "Synthetic auth"\nroot = "{source.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    credential = tmp_path / "private" / "operator.json"
+    create_operator(credential, "analyst", "safe local password")
+    database = tmp_path / "state" / "records.sqlite3"
+    app = create_app(database, credential, serve_frontend=False, log_sources_path=log_config)
+    app.state.log_job_manager.start()
+    request.addfinalizer(app.state.log_job_manager.stop)
+    client = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000))
+    assert client.get("/api/log/sources").status_code == 401
+    assert (
+        client.post(
+            "/api/log/jobs", json={"source_id": "auth"}, headers={"Origin": "http://127.0.0.1"}
+        ).status_code
+        == 401
+    )
+    login = _login(client)
+    csrf = login.json()["csrf_token"]
+    headers = {"Origin": "http://127.0.0.1", "X-CSRF-Token": csrf}
+    assert (
+        client.post(
+            "/api/log/jobs", json={"source_id": "auth", "path": str(source)}, headers=headers
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post("/api/log/jobs", json={"source_id": "unknown"}, headers=headers).status_code
+        == 422
+    )
+    assert client.get("/api/log/sources").json() == [
+        {"source_id": "auth", "display_name": "Synthetic auth"}
+    ]
+    created = client.post("/api/log/jobs", json={"source_id": "auth"}, headers=headers)
+    assert created.status_code == 202
+    job_id = created.json()["job_id"]
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        job = client.get(f"/api/log/jobs/{job_id}").json()
+        if job["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.02)
+    assert job["status"] == "succeeded"
+    assert job["event_count"] == 1
+    assert source.as_posix() not in client.get(f"/api/log/jobs/{job_id}").text
+    scan_id = job["scan_id"]
+    events = client.get(f"/api/log/analyses/{scan_id}/events?limit=1")
+    assert events.status_code == 200 and events.json()["total"] == 1
+    event = events.json()["items"][0]
+    assert "raw_ref" not in event and source.as_posix() not in events.text
+    assert client.get(f"/api/log/analyses/{scan_id}/events?limit=101").status_code == 422
+    alerts = client.get(f"/api/log/analyses/{scan_id}/alerts")
+    assert alerts.status_code == 200
+    case = client.post("/api/cases", json={"scan_id": scan_id}, headers=headers)
+    assert case.status_code == 201
+    case_id = case.json()["case"]["case_id"]
+    link = client.post(
+        f"/api/cases/{case_id}/links",
+        json={"record_type": "event", "record_id": event["event_id"]},
+        headers=headers,
+    )
+    assert link.status_code == 200
+    assert any(item["record_id"] == event["event_id"] for item in link.json()["links"])
+    assert client.get(f"/api/cases/{case_id}/report/markdown").status_code == 200
+    assert hashlib.sha256(log_file.read_bytes()).hexdigest() == original_hash
+    client.post("/api/auth/logout", headers=headers)
+    assert client.get(f"/api/log/analyses/{scan_id}/events").status_code == 401
 
 
 def test_csrf_logout_revocation_and_actual_session_expiry(tmp_path):
