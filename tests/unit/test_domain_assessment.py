@@ -1,5 +1,6 @@
 import json
 import socket
+import ssl
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -18,6 +19,7 @@ from chinescan.domain_assessment.probe import (
     ProbeSettings,
     _head_request,
     _is_public_address,
+    _tls_context,
 )
 from chinescan.domain_assessment.service import DomainAssessmentService
 
@@ -175,6 +177,10 @@ def test_public_address_filter() -> None:
     assert _is_public_address("8.8.8.8")
     assert not _is_public_address("127.0.0.1")
     assert not _is_public_address("10.0.0.1")
+
+
+def test_tls_context_rejects_legacy_protocols() -> None:
+    assert _tls_context().minimum_version == ssl.TLSVersion.TLSv1_2
 
 
 def test_network_probe_caps_destinations_and_profile_requests(monkeypatch) -> None:

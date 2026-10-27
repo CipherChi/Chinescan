@@ -198,7 +198,7 @@ def _head_request(
         connection: socket.socket
         certificate: dict[str, str] = {}
         if tls:
-            context = ssl.create_default_context()
+            context = _tls_context()
             secured = context.wrap_socket(raw_socket, server_hostname=hostname)
             connection = secured
             cert = secured.getpeercert()
@@ -232,6 +232,13 @@ def _head_request(
             if key in _REPORTED_HEADERS and key not in parsed_headers:
                 parsed_headers[key] = value.decode("latin-1", errors="replace").strip()[:500]
     return int(status_parts[1]), parsed_headers, certificate
+
+
+def _tls_context() -> ssl.SSLContext:
+    """Use the system trust store and refuse legacy TLS versions for posture requests."""
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
 
 
 def _certificate_fields(certificate: dict[str, object]) -> dict[str, str]:

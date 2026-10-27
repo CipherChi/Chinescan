@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, resolve } from 'node:path';
@@ -11,6 +12,11 @@ const children: ChildProcess[] = [];
 let dataRoot = '';
 const DIAGNOSTIC_LIMIT = 4_000;
 const STARTUP_TIMEOUT_MS = 120_000;
+
+interface TestCredentials {
+  username: string;
+  password: string;
+}
 
 function appendBounded(current: string, chunk: string): string {
   return (current + chunk).slice(-DIAGNOSTIC_LIMIT);
@@ -36,7 +42,18 @@ async function stopOwned(child: ChildProcess): Promise<void> {
   if (child.exitCode === null && process.platform !== 'win32') child.kill('SIGKILL');
 }
 
-async function start(ttl: number, holdScanUntilExpiry = false): Promise<{ url: string; username: string; password: string }> {
+function makeCredentials(): TestCredentials {
+  return {
+    username: `browser-${randomBytes(4).toString('hex')}`,
+    password: randomBytes(24).toString('base64url'),
+  };
+}
+
+async function start(
+  ttl: number,
+  credentials: TestCredentials,
+  holdScanUntilExpiry = false,
+): Promise<{ url: string; username: string; password: string }> {
   const directory = resolve(dataRoot, `ttl-${ttl}`);
   const python = process.env.CHINESCAN_PYTHON ?? (process.platform === 'win32' ? 'py' : 'python3.12');
   const pythonArgs = process.env.CHINESCAN_PYTHON
@@ -56,52 +73,56 @@ async function start(ttl: number, holdScanUntilExpiry = false): Promise<{ url: s
         process.env.PYTHONPATH,
       ].filter(Boolean).join(delimiter),
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });
   children.push(child);
   let stdout = '';
   let stderr = '';
+  let credentialsPipeFailed = false;
   child.stdout?.setEncoding('utf8');
   child.stderr?.setEncoding('utf8');
   child.stdout?.on('data', (chunk: string) => { stdout = appendBounded(stdout, chunk); });
   child.stderr?.on('data', (chunk: string) => { stderr = appendBounded(stderr, chunk); });
   try {
+    if (!child.stdin) throw new Error('Dashboard fixture credential pipe is unavailable.');
+    child.stdin.on('error', () => { credentialsPipeFailed = true; });
+    child.stdin.end(`${JSON.stringify(credentials)}\n`);
     const startedAt = Date.now();
     const deadline = startedAt + STARTUP_TIMEOUT_MS;
-    let url: { url: string; username: string; password: string } | undefined;
-    while (Date.now() < deadline && !url) {
+    let endpoint: { url: string } | undefined;
+    while (Date.now() < deadline && !endpoint) {
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`Dashboard fixture exited early (code=${child.exitCode}, signal=${child.signalCode}).`);
       }
+      if (credentialsPipeFailed) throw new Error('Dashboard fixture could not receive test credentials.');
       const lineEnd = stdout.indexOf('\n');
-      if (lineEnd >= 0) url = JSON.parse(stdout.slice(0, lineEnd)) as typeof url;
+      if (lineEnd >= 0) endpoint = JSON.parse(stdout.slice(0, lineEnd)) as typeof endpoint;
       else await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
     }
-    if (!url) {
+    if (!endpoint) {
       const lineEnd = stdout.indexOf('\n');
-      if (lineEnd >= 0) url = JSON.parse(stdout.slice(0, lineEnd)) as typeof url;
+      if (lineEnd >= 0) endpoint = JSON.parse(stdout.slice(0, lineEnd)) as typeof endpoint;
     }
-    if (!url) {
+    if (!endpoint) {
       throw new Error(`Dashboard fixture did not announce a listening URL within ${STARTUP_TIMEOUT_MS / 1000} seconds (elapsed ${((Date.now() - startedAt) / 1000).toFixed(1)}s).`);
     }
 
-    // A printed URL is not readiness: require an actual HTTP response from the owned server.
+    // The child prints only the URL. Require HTTP readiness before sharing credentials with tests.
     const readyDeadline = Date.now() + 10_000;
     while (Date.now() < readyDeadline) {
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`Dashboard fixture exited before HTTP readiness (code=${child.exitCode}).`);
       }
       try {
-        const response = await fetch(`${url.url}/api/auth/session`, { signal: AbortSignal.timeout(1_000) });
-        if (response.status === 401) return url;
+        const response = await fetch(`${endpoint.url}/api/auth/session`, { signal: AbortSignal.timeout(1_000) });
+        if (response.status === 401) return { ...endpoint, ...credentials };
       } catch { /* Continue until the bounded readiness deadline. */ }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
     }
     throw new Error('Dashboard fixture announced a URL but did not become HTTP-ready within 10 seconds.');
   } catch (error) {
     await stopOwned(child);
-    // stdout contains generated login credentials. Never include it in failure diagnostics.
     throw new Error(`${String(error)}\nFixture stderr (last ${DIAGNOSTIC_LIMIT} chars):\n${stderr}`);
   }
 }
@@ -109,7 +130,10 @@ async function start(ttl: number, holdScanUntilExpiry = false): Promise<{ url: s
 export default async function globalSetup(_config: FullConfig) {
   dataRoot = await mkdtemp(resolve(tmpdir(), 'chinescan-playwright-'));
   try {
-    const urls = { standard: await start(1800), expiry: await start(15, true) };
+    const urls = {
+      standard: await start(1800, makeCredentials()),
+      expiry: await start(15, makeCredentials(), true),
+    };
     process.env.CHINESCAN_BROWSER_TEST_URLS = JSON.stringify(urls);
   } catch (error) {
     await Promise.all(children.map(stopOwned));

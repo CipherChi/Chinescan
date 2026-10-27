@@ -908,3 +908,29 @@ browser job and overall workflow were still in progress when the initial failure
 offline benchmark run for that SHA passed at
 <https://github.com/CipherChi/Chinescan/actions/runs/40536275831>. Follow-up remote verification of
 the correction is required before release checks can be called complete.
+
+## Follow-up security review — 2026-10-27
+
+The follow-up CI run for `480f020e96a97887d8429df3c038fbe1173f91e6` passed its quality,
+Windows B1, dashboard, container, and secret-scan jobs. The matching CodeQL analyses and offline
+benchmark run also completed successfully:
+
+- CI: <https://github.com/CipherChi/Chinescan/actions/runs/40538024346>
+- CodeQL: <https://github.com/CipherChi/Chinescan/actions/runs/40538024315>
+- Offline benchmarks: <https://github.com/CipherChi/Chinescan/actions/runs/40538024313>
+
+Review of that commit's CodeQL findings identified legacy TLS versions being permitted by the
+domain probe and generated browser-test credentials being printed by the test harness. The current
+follow-up changes explicitly require TLS 1.2 or newer and pass generated test credentials through
+the harness's stdin pipe while printing only the loopback URL. Local regression and browser tests
+pass; remote confirmation is pending for the follow-up commit.
+
+The Trivy report step listed 44 high-severity package matches across eight Debian advisories in the
+pinned `python:3.12.15-slim-trixie` image; the blocking policy step passes because none are marked
+fixable in the current Trixie package set. Debian's tracker lists fixes only in newer or unstable
+package lines for these findings: [ncurses](https://security-tracker.debian.org/tracker/CVE-2025-69720),
+[systemd](https://security-tracker.debian.org/tracker/CVE-2026-16742),
+[ACL](https://security-tracker.debian.org/tracker/CVE-2026-54369),
+[util-linux](https://security-tracker.debian.org/tracker/source-package/util-linux), and
+[Perl Archive::Tar](https://security-tracker.debian.org/tracker/CVE-2026-9538). Moving the base
+image to a newer Debian release or carrying package backports needs a separate security decision.

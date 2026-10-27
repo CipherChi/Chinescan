@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import secrets
 import signal
 import socket
+import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,12 +53,35 @@ class WaitForSessionExpiry:
         await self.application(scope, receive, send)
 
 
+def _read_test_credentials() -> tuple[str, str]:
+    raw = sys.stdin.buffer.readline(513)
+    if len(raw) > 512 or not raw.endswith(b"\n"):
+        raise ValueError("Invalid browser fixture credential request.")
+    request = json.loads(raw)
+    if not isinstance(request, dict) or set(request) != {"username", "password"}:
+        raise ValueError("Invalid browser fixture credential request.")
+    username = request["username"]
+    password = request["password"]
+    if (
+        not isinstance(username, str)
+        or not username.startswith("browser-")
+        or len(username) > 64
+        or not isinstance(password, str)
+        or not 24 <= len(password) <= 128
+        or "\n" in password
+        or "\r" in password
+    ):
+        raise ValueError("Invalid browser fixture credentials.")
+    return username, password
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", required=True, type=Path)
     parser.add_argument("--ttl", required=True, type=int)
     parser.add_argument("--hold-scan-until-expiry", action="store_true")
     args = parser.parse_args()
+    operator_username, operator_password = _read_test_credentials()
     args.data_dir.mkdir(parents=True, exist_ok=False)
     database = args.data_dir / "records.sqlite3"
     credentials = args.data_dir / "operator.json"
@@ -101,8 +124,6 @@ def main() -> None:
         f'root = "{log_source.as_posix()}"\n',
         encoding="utf-8",
     )
-    operator_username = f"browser-{secrets.token_hex(4)}"
-    operator_password = secrets.token_urlsafe(24)
     create_operator(credentials, operator_username, operator_password)
 
     repository = SQLiteRepository(database)
@@ -192,13 +213,7 @@ def main() -> None:
     if not server.started:
         raise RuntimeError("Loopback application failed to start")
     print(
-        json.dumps(
-            {
-                "url": f"http://127.0.0.1:{listener.getsockname()[1]}",
-                "username": operator_username,
-                "password": operator_password,
-            }
-        ),
+        json.dumps({"url": f"http://127.0.0.1:{listener.getsockname()[1]}"}),
         flush=True,
     )
     worker.join()
