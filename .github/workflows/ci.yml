@@ -26,7 +26,7 @@ jobs:
           persist-credentials: false
 
       # astral-sh/setup-uv v6.0.0
-      - uses: astral-sh/setup-uv@c7f87aa956e4c323abf06d5dec078e358f6b4d04
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -51,7 +51,7 @@ jobs:
           persist-credentials: false
 
       # astral-sh/setup-uv v6.0.0
-      - uses: astral-sh/setup-uv@c7f87aa956e4c323abf06d5dec078e358f6b4d04
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -93,7 +93,7 @@ jobs:
           persist-credentials: false
 
       # astral-sh/setup-uv v6.0.0
-      - uses: astral-sh/setup-uv@c7f87aa956e4c323abf06d5dec078e358f6b4d04
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
