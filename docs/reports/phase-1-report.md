@@ -889,7 +889,7 @@ checks and an explicit frontend dependency audit after `npm ci --no-audit`.
 | `npm run build` (from `frontend/`) | 0 | Production build passed; JS `264.84 kB`, CSS `22.62 kB` uncompressed. |
 | `npm run test:e2e` (from `frontend/`) | 0 | `5 passed (1.8m)` in Chromium against local synthetic fixtures. |
 | `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 scripts\recovery_acceptance.py` | 0 | Backup/restore drill completed; JSON, Markdown, and HTML reports generated; original database remained intact and restored-only writes stayed divergent. |
-| `git diff --check` | 0 | Passed before this release-verification section was added; rerun after final edits. |
+| `git diff --check` | 0 | Passed after adding this release-verification section; rerun after final edits. |
 
 An initial full Python run returned 146 passed and 3 failed (with the same five deselected): the
 synthetic child-process tree did not start in one Job Object test, and two backup publication checks
@@ -897,6 +897,14 @@ hit Windows `WinError 5`. The managed-malware suite then passed all 19 tests in 
 the actual synthetic process-tree check, and the complete sequential rerun passed all 149 selected
 tests. A later diagnostic pair of simultaneous pytest invocations also collided because both used the
 shared `tests/.pytest-tmp` path; those overlapping results were discarded. The browser suite passed on
-its isolated rerun after one session-expiry login timeout during the first run. CI results remain
-pending the exact pushed commit; the new Windows job, secret scan, and container/dependency scans have
-not yet run remotely.
+its isolated rerun after one session-expiry login timeout during the first run.
+
+The initial GitHub Actions run for `eb04cdfabae9be41409e4682e19a2f33b3c265eb` is recorded at
+<https://github.com/CipherChi/Chinescan/actions/runs/40536275930>. Strict mypy failed on Linux because
+`ctypes.WinDLL` is absent from Linux's ctypes stubs. The focused correction now resolves `WinDLL`
+dynamically and fails closed if unavailable; Linux-platform mypy emulation passes locally. The same
+run's Windows managed-malware job, secret scan, and container build/security job passed; the dashboard
+browser job and overall workflow were still in progress when the initial failure was diagnosed. The
+offline benchmark run for that SHA passed at
+<https://github.com/CipherChi/Chinescan/actions/runs/40536275831>. Follow-up remote verification of
+the correction is required before release checks can be called complete.
