@@ -1232,4 +1232,22 @@ The Windows API symbols now use guarded `getattr` lookups. If the API is unavail
 is inconclusive, recovery conservatively treats the process as alive instead of marking its job
 interrupted. After this adjustment, local mypy passes for all 52 source files, Ruff passes, and the
 complete managed-malware test file passes (35 passed on Windows). Remote verification of the
-corrected typing and final SHA is pending.
+corrected typing and final SHA is recorded below.
+
+### Verified liveness-fix SHA — `791cf7266333db10cd95fadda121311ebf7a23e2`
+
+The final code commit was pushed normally to `main`; all configured workflows passed for this exact
+SHA:
+
+- [CI run 40710401322](https://github.com/CipherChi/Chinescan/actions/runs/40710401322): quality (including coverage), Windows managed-malware acceptance, dashboard/browser acceptance, container, and secret scan all passed.
+- [Offline benchmarks run 40710401288](https://github.com/CipherChi/Chinescan/actions/runs/40710401288) passed.
+- [Push/security run 40710398300](https://github.com/CipherChi/Chinescan/actions/runs/40710398300) passed CodeQL for JavaScript/TypeScript, Python, and Actions.
+
+The Windows job completed both mocked/control-path acceptance and all three actual contained
+worker/process-tree tests. The Linux quality job completed Ruff, strict mypy, 168 unit tests with
+the 80% coverage threshold, pip-audit, and Bandit. The dashboard job completed npm audit,
+typecheck, component tests, production build, and Playwright acceptance. Five optional real-scanner
+tests remained deselected because scanner binaries/signature data were unavailable; no scanner
+execution or malware upload was performed.
+
+This report-only change creates a new SHA; its Actions runs must also complete before final delivery.
