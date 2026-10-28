@@ -1155,5 +1155,24 @@ Follow-up verification on the working tree:
 | `.venv\Scripts\pytest.exe tests/unit/test_managed_malware.py -q --full-trace -k "not test_actual_windows_contained_worker_returns_bounded_synthetic_result and not test_actual_windows_manager_persists_contained_synthetic_analysis and not test_actual_job_object_terminates_synthetic_child_process_tree"` | 0 | 26 passed, 3 deselected. |
 | `.venv\Scripts\pytest.exe tests/unit/test_managed_malware.py -q --full-trace -k "test_actual_windows_contained_worker_returns_bounded_synthetic_result or test_actual_windows_manager_persists_contained_synthetic_analysis or test_actual_job_object_terminates_synthetic_child_process_tree"` | 0 | 3 passed, 26 deselected on Windows. |
 
-These follow-up changes are not yet verified remotely. The next pushed SHA must pass the complete
-CI and security workflows before this report can state final verification.
+### Second repair commit verification — `23f4e6103ee072d6086fc0dbf7747389c8d8cf1d`
+
+The second repair commit was pushed normally to `main`. Its workflows completed as follows:
+
+- [CI run 40663199017](https://github.com/CipherChi/Chinescan/actions/runs/40663199017): quality passed, including coverage; dashboard/browser, container, and secret scan passed. Windows managed-malware acceptance failed.
+- [Offline benchmarks run 40663199001](https://github.com/CipherChi/Chinescan/actions/runs/40663199001) passed.
+- [Push/security run 40663198825](https://github.com/CipherChi/Chinescan/actions/runs/40663198825) passed, including CodeQL analyses for Actions, Python, and JavaScript/TypeScript.
+
+The Windows job ran on Windows Server 2025 with Python 3.12.10. Exact failed command:
+
+`uv run --locked --extra dev pytest tests/unit/test_managed_malware.py -q -k "not test_actual_windows_contained_worker_returns_bounded_synthetic_result and not test_actual_windows_manager_persists_contained_synthetic_analysis and not test_actual_job_object_terminates_synthetic_child_process_tree" --full-trace`
+
+It printed `26 passed, 3 deselected in 1.22s`, then Actions reported exit code 1. `--full-trace`
+produced no traceback or pytest failure. The actual Windows containment tests did not run because
+the first step failed. Reproduction on the local Windows host also prints passing summaries and
+returns exit 1 for some multi-test selections, while individual selections return 0. The pytest
+session reports exit code 0 when invoked via `pytest.main`, so the exit-status change occurs outside
+pytest's reported result. Its source remains unidentified; no workaround was applied.
+
+Current verification is therefore incomplete: the Windows managed-malware acceptance check is
+still failing on the pushed SHA. This report does not claim that all required checks passed.
