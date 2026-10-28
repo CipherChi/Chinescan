@@ -1032,3 +1032,37 @@ code plus the failing item/trace if SIGINT recurs. For backup publication, the n
 must be captured before cleanup with Windows file attributes and Restart Manager's resource-holder
 list; the current isolated 500-run reproduction did not trigger it. Until both signals are resolved,
 do not mark the release checks complete.
+
+## CI failure follow-up — 2026-10-28
+
+The screenshot corresponds to GitHub Actions run `40656496453` at commit
+`2f5b03500bc93411c3c795901a0e43337ba85a99`. Its three failing checks had distinct causes:
+
+- `quality`: `test_malware_api_fail_closed_and_redacted_case_linking` expected HTTP 422 for an
+  unknown registered sample, but got 503 on Linux because the containment-unavailable check ran
+  before sample validation. `MalwareDashboardManager.submit` now validates the approved registry
+  entry before reporting service/containment availability. A valid sample still fails closed when
+  containment is unavailable.
+- `dashboard`: the production build passed; one real contained-worker browser test exceeded the
+  global 90-second Playwright timeout. That test now has a 180-second budget, above its existing
+  120-second job wait.
+- `Windows managed malware worker acceptance`: pytest received `KeyboardInterrupt` at
+  `threading.Thread.start()` after 17 tests, without an assertion failure. The focused test uses
+  synchronous in-memory `BytesIO` streams, so its pipe reader now runs inline; real worker tests
+  continue to exercise the actual Windows worker and Job Object.
+
+Local verification after these changes (PowerShell, Python 3.12.10):
+
+| Exact command | Exit | Result |
+| --- | ---: | --- |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest tests/unit/test_web_api.py::test_malware_api_fail_closed_and_redacted_case_linking -q` | 0 | 1 passed in 11.67s. |
+| `npm run test:e2e -- --grep "actual contained malware triage"` (from `frontend/`) | 0 | 1 passed in 36.3s; actual Windows contained worker, persistence, case link, report redaction, refresh, and logout checks completed. |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest tests/unit/test_managed_malware.py -q` | 2 | `KeyboardInterrupt` still recurred after 18 passed while entering the next real-worker test. No assertion failed; the source of the interrupt remains unidentified. |
+| `$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages'; py -3.12 -m pytest tests/unit/test_managed_malware.py::test_actual_windows_contained_worker_returns_bounded_synthetic_result -vv --full-trace` | 0 | 1 passed in 0.73s. |
+| `.venv\Scripts\ruff.exe check tests/unit/test_managed_malware.py chinescan/web/malware_jobs.py` | 0 | All checks passed. |
+| `.venv\Scripts\ruff.exe format --check tests/unit/test_managed_malware.py chinescan/web/malware_jobs.py` | 0 | 2 files already formatted. |
+| `git diff --check` | 0 | Passed. |
+
+The full Windows worker acceptance remains unresolved because of the reproducible external-looking
+`KeyboardInterrupt`; the focused real-worker acceptance passes in isolation. No workflow rerun was
+started and no commit or push was made.

@@ -241,6 +241,9 @@ test('approved local log source produces persisted alerts, events, timeline, cas
 });
 
 test('actual contained malware triage persists, links to a case, exports redacted metadata, and survives refresh', async ({ page }) => {
+  // A real contained Windows worker can take longer on a busy hosted runner than
+  // the default test budget, especially while the browser and API run together.
+  test.setTimeout(180_000);
   await signIn(page);
   await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: /^Cases/ }).click();
   await page.getByLabel('Persisted scan ID').fill(scanId);
