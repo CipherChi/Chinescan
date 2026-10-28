@@ -240,10 +240,7 @@ test('approved local log source produces persisted alerts, events, timeline, cas
   expect((await page.request.get(`${urls.standard?.url}/api/log/jobs`)).status()).toBe(401);
 });
 
-test('actual contained malware triage persists, links to a case, exports redacted metadata, and survives refresh', async ({ page }) => {
-  // A real contained Windows worker can take longer on a busy hosted runner than
-  // the default test budget, especially while the browser and API run together.
-  test.setTimeout(180_000);
+test('malware triage requires Windows containment and persists completed analyses', async ({ page }) => {
   await signIn(page);
   await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: /^Cases/ }).click();
   await page.getByLabel('Persisted scan ID').fill(scanId);
@@ -254,7 +251,15 @@ test('actual contained malware triage persists, links to a case, exports redacte
   await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: /^Malware triage/ }).click();
   await expect(page.getByText('Static triage only. No sample execution. Process containment is not an OS sandbox.')).toBeVisible();
   await page.getByLabel('Operator-registered sample').selectOption('registry:browser-benign');
-  await page.getByRole('button', { name: 'Start built-in static analysis' }).click();
+  const capability = await page.evaluate(async () => (await fetch('/api/malware/capability')).json() as { execution_available: boolean });
+  const startButton = page.getByRole('button', { name: 'Start built-in static analysis' });
+  if (!capability.execution_available) {
+    await expect(page.getByRole('heading', { name: 'Analysis execution unavailable' })).toBeVisible();
+    await expect(startButton).toBeDisabled();
+    return;
+  }
+  await expect(startButton).toBeEnabled();
+  await startButton.click();
   const jobRow = page.locator('tbody tr').first();
   await expect(jobRow).toContainText('succeeded', { timeout: 120_000 });
   await expect(jobRow).toContainText(/complete|partial/);

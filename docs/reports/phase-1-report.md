@@ -553,7 +553,7 @@ existing lockfiles remain consistent.
 | `& .\\.venv312\\Scripts\\uv.exe run --offline ruff check .` | 0 | `All checks passed!` |
 | `& .\\.venv312\\Scripts\\uv.exe run --offline ruff format --check .` | 0 | `111 files already formatted`. |
 | `$env:PYTHONPATH='C:\\src\\Chinescan;.venv\\Lib\\site-packages'; py -3.12 -m mypy --strict chinescan` | 0 | `Success: no issues found in 46 source files`. |
-| `& .\\.venv312\\Scripts\\uv.exe lock --check` | 0 | `Resolved 76 packages`. |
+| `& .\.venv312\Scripts\uv.exe lock --check` | 0 | `Resolved 76 packages`. |
 | `npm --prefix frontend run typecheck` | 0 | TypeScript project build passed. |
 | `npm --prefix frontend test -- --reporter=dot` | 0 | `2` test files, `5` tests passed (3 new case workflow tests plus the existing 2 dashboard tests). |
 | `npm --prefix frontend run build` | 0 | Vite production build passed; CSS 20.43 kB and JS 248.96 kB (uncompressed). |
@@ -1066,3 +1066,72 @@ Local verification after these changes (PowerShell, Python 3.12.10):
 The full Windows worker acceptance remains unresolved because of the reproducible external-looking
 `KeyboardInterrupt`; the focused real-worker acceptance passes in isolation. No workflow rerun was
 started and no commit or push was made.
+
+## CI repair investigation — 2026-10-28
+
+### Baseline
+
+Before edits, `main`, `HEAD`, and `origin/main` were identical at
+`a7008f7ec7c6d0db228a02f0e0308af5c6b92aba`; the working tree was clean. The branch had no
+protection rule. The earlier screenshot commit was `2f5b03500bc93411c3c795901a0e43337ba85a99`,
+but the newest CI run was `40657868171`:
+
+- CI: <https://github.com/CipherChi/Chinescan/actions/runs/40657868171>
+- Offline benchmarks: <https://github.com/CipherChi/Chinescan/actions/runs/40657868201>
+- Newer push workflow: <https://github.com/CipherChi/Chinescan/actions/runs/40659082070>
+
+At `a7008f7`, Linux quality, container, and secret-scan jobs passed; the benchmark and push
+workflows passed. The Windows managed-malware job and Linux dashboard/browser job failed.
+
+### Actual failure evidence
+
+| Check | Runner and command | Failure evidence |
+| --- | --- | --- |
+| Windows managed malware worker acceptance | Windows Server 2025; Python 3.12.10 installed by locked `uv sync`; `uv run --locked --extra dev pytest tests/unit/test_managed_malware.py -q` | Exit 1. Pytest printed 18 passes, then `KeyboardInterrupt` at `threading.py:355` as the first real worker test started its stdout-reader thread. No assertion failed. The Actions command omitted `--full-trace`; a local full-trace reproduction places the interrupt in `process.py` at `reader.start()` / `threading.Event.wait()`. Its origin remains unknown. |
+| Dashboard build and browser acceptance | Ubuntu; Node 22.22.0; `npm run test:e2e` after successful install, audit, typecheck, component tests, build, and Chromium installation | Exit 1. Five tests passed. The malware UI workflow timed out at 180 seconds while clicking a button that the Linux application correctly disables because verified Windows Job Object execution is unavailable. The UI already exposes that capability state. |
+
+GitHub returned no uploaded artifacts for this run, so the referenced Playwright screenshot, error
+context, and trace were not retrievable from Actions. No process assertion or backup `WinError 5`
+was present in these failure logs.
+
+### Changes in this repair
+
+- The browser acceptance now checks `/api/malware/capability`. On platforms without verified
+  containment it asserts the unavailable state and disabled control. When containment is available,
+  it continues through the real analysis, persistence, case link, redaction, refresh, and logout
+  checks.
+- Worker launch now creates the Job Object first, launches the child suspended, verifies its Job
+  Object assignment, starts the bounded output reader, and resumes exactly one verified primary
+  thread. If thread discovery or resume verification fails, cleanup terminates the assigned child.
+  The helper verifies the original process remains alive and that the opened primary thread belongs to that process before resuming it. This ensures the static parser cannot start before containment.
+- Added portable Win32 API-control tests for primary-thread discovery/resume and a regression
+  assertion that launch uses `CREATE_SUSPENDED` and resumes only after Job assignment.
+- CI now runs mocked/control-path tests and the three real Windows worker tests in separate pytest
+  processes. All real Windows tests remain enabled; the second step uses `--full-trace`.
+
+### Local verification after the repair
+
+| Exact command | Exit | Result |
+| --- | ---: | --- |
+| `npm run typecheck` (from `frontend/`) | 0 | Passed. |
+| `npm test -- --reporter=dot` (from `frontend/`) | 0 | 4 files, 8 tests passed. |
+| `npm run build` (from `frontend/`) | 0 | Vite production build passed. |
+| `npm run test:e2e` (from `frontend/`, Windows host) | 0 | 6 passed in 3.1m, including the real contained Windows malware workflow. |
+| `npm run test:e2e -- --grep "malware triage requires Windows containment"` (from `frontend/`) | 0 | 1 passed in 20.1s on the final suspended-worker launch code. |
+| `npm audit --audit-level=moderate` (from `frontend/`) | 0 | 0 vulnerabilities. |
+| `.venv\Scripts\pytest.exe tests/unit/test_managed_malware.py -q -k "test_worker_control_path_timeout_and_output_overflow_close_pipes or test_resume_suspended_process_requires_one_resumable_primary_thread or test_actual_windows_contained_worker_returns_bounded_synthetic_result or test_actual_windows_manager_persists_contained_synthetic_analysis or test_actual_job_object_terminates_synthetic_child_process_tree" --full-trace --basetemp=tests/.pytest-tmp-codex-winlast` | 0 | 12 passed, 17 deselected in 2.29s. Actual worker, manager, process-tree, ordering, and API-control tests ran on Windows. |
+| `.venv\Scripts\pytest.exe tests/unit/test_recovery.py -q` | 0 | 15 passed in 8.91s. |
+| `.venv\Scripts\ruff.exe check .` | 0 | All checks passed. |
+| `.venv\Scripts\ruff.exe format --check .` | 0 | 125 files already formatted. |
+| `.venv\Scripts\mypy.exe --strict chinescan` | 0 | No issues in 52 source files. |
+| `& .\.venv312\Scripts\uv.exe lock --check` | 0 | 76 packages resolved; lock is consistent. |
+| `.venv\Scripts\pip-audit.exe --skip-editable` | 0 | No known vulnerabilities; editable project distribution skipped. |
+| `.venv\Scripts\bandit.exe --severity-level medium -r chinescan` | 0 | No medium or high findings; existing 12 low findings remain. |
+| `py -3.12 -m pytest --cov=chinescan --cov-report=term-missing --cov-fail-under=80` | 1 | Locally interrupted after 106 passed and 5 optional scanner tests were deselected; the Windows worker suite received `KeyboardInterrupt`, so no coverage result was produced. On the prior SHA, Linux CI quality passed with 80.40% coverage; the new SHA still needs CI verification. |
+
+Optional real YARA/ClamAV scanner tests remain separately deselected because the required local
+binaries and signature data are not installed. No sample was executed outside the fixed static
+worker, uploaded, or sent for external enrichment.
+
+This report records investigation and local results only. Remote CI results for the repair commit
+must be added after that exact SHA completes.
