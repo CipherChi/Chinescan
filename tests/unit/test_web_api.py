@@ -404,8 +404,8 @@ def test_authenticated_log_job_results_case_links_and_read_only_source(tmp_path,
     assert client.get(f"/api/log/analyses/{scan_id}/events").status_code == 401
 
 
-def test_csrf_logout_revocation_and_actual_session_expiry(tmp_path):
-    _app, client, _credential, _database = _fixture(tmp_path, ttl=1)
+def test_csrf_logout_revocation(tmp_path):
+    _app, client, _credential, _database = _fixture(tmp_path)
     login = _login(client)
     csrf = login.json()["csrf_token"]
     assert (
@@ -422,6 +422,11 @@ def test_csrf_logout_revocation_and_actual_session_expiry(tmp_path):
     assert logged_out.status_code == 200
     assert client.get("/api/overview").status_code == 401
 
+    assert _login(client).status_code == 200
+
+
+def test_actual_session_expiry(tmp_path):
+    _app, client, _credential, _database = _fixture(tmp_path, ttl=1)
     assert _login(client).status_code == 200
     time.sleep(1.1)
     assert client.get("/api/auth/session").status_code == 401

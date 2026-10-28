@@ -1176,3 +1176,48 @@ pytest's reported result. Its source remains unidentified; no workaround was app
 
 Current verification is therefore incomplete: the Windows managed-malware acceptance check is
 still failing on the pushed SHA. This report does not claim that all required checks passed.
+
+### Windows liveness fix — local verification before push
+
+The Windows exit-status failure was traced to `MalwareJobManager.reconcile()` calling
+`_pid_is_alive()`, which used `os.kill(pid, 0)`. Python documents that on Windows signal value `0`
+is `CTRL_C_EVENT`, which targets console processes sharing a console; it is not a no-signal process
+probe ([Python `os.kill` documentation](https://docs.python.org/3/library/os.html#os.kill)). This
+explains the observed `KeyboardInterrupt` during the prior worker acceptance run and the exit 1
+after a passing pytest summary. The Windows path now opens the PID with `SYNCHRONIZE` access and
+checks its state using `WaitForSingleObject`; inconclusive access or wait errors preserve the job
+as potentially active. POSIX retains its `os.kill(pid, 0)` liveness check. Portable API tests cover
+running, exited, inaccessible, and inconclusive states. The implementation requests only the
+`SYNCHRONIZE` process right required by [OpenProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess)
+and uses [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)
+with a zero timeout.
+
+The full Windows Python acceptance also exposed a separate test timing issue: logout and CSRF
+assertions shared a one-second session TTL with the expiry test, so on the slower full-suite run
+the session expired before logout. The tests are now separated: logout uses the normal TTL, while
+actual expiry remains checked independently.
+
+Local verification after these changes (Windows Server 2025 host, Python 3.12.10):
+
+| Exact command | Exit | Result |
+| --- | ---: | --- |
+| `& .\.venv312\Scripts\uv.exe run --locked --extra dev pytest --cov=chinescan --cov-report=term-missing --cov-fail-under=80` | 0 | 168 passed, 5 optional scanner tests deselected; 82.62% total coverage. |
+| `& .\.venv312\Scripts\uv.exe run --locked --extra dev pytest tests/unit/test_managed_malware.py -q -k "not test_actual_windows_contained_worker_returns_bounded_synthetic_result and not test_actual_windows_manager_persists_contained_synthetic_analysis and not test_actual_job_object_terminates_synthetic_child_process_tree" --full-trace` | 0 | 32 passed, 3 deselected. This is the CI worker-control step. |
+| `& .\.venv312\Scripts\uv.exe run --locked --extra dev pytest tests/unit/test_managed_malware.py -q -k "test_actual_windows_contained_worker_returns_bounded_synthetic_result or test_actual_windows_manager_persists_contained_synthetic_analysis or test_actual_job_object_terminates_synthetic_child_process_tree" --full-trace` | 0 | 3 passed, 32 deselected; real contained worker and process-tree checks ran on Windows. |
+| `& .\.venv312\Scripts\uv.exe run --locked --extra dev ruff check .` | 0 | Passed. |
+| `& .\.venv312\Scripts\uv.exe run --locked --extra dev ruff format --check .` | 0 | 125 files formatted. |
+| `& .\.venv312\Scripts\uv.exe run --locked --extra dev mypy --strict chinescan` | 0 | No issues in 52 source files. |
+| `& .\.venv312\Scripts\uv.exe lock --check` | 0 | 76 packages resolved; lock is consistent. |
+| `& .\.venv312\Scripts\uv.exe run --locked --extra dev pip-audit --skip-editable` | 0 | No known vulnerabilities; editable project distribution skipped. |
+| `& .\.venv312\Scripts\uv.exe run --locked --extra dev bandit --severity-level medium -r chinescan` | 0 | No medium or high findings; 12 low findings remain. |
+| `npm run typecheck` (from `frontend/`) | 0 | Passed. |
+| `npm test -- --reporter=dot` (from `frontend/`) | 0 | 4 files, 8 tests passed. |
+| `npm run build` (from `frontend/`) | 0 | Vite production build passed. |
+| `npm run test:e2e` (from `frontend/`) | 0 | 6 passed in 54.2s, including the actual Windows malware workflow and separate session-expiry test. |
+| `npm audit --audit-level=moderate` (from `frontend/`) | 0 | 0 vulnerabilities. |
+| `git diff --check` | 0 | Passed. |
+
+The last pushed SHA `d806d55e9f31542de42ab4be4f00bf642d36f260` passed quality, dashboard/browser,
+container, secret scan, offline benchmarks, and all CodeQL analyses; its Windows worker step failed
+before this liveness fix. Remote verification for the next SHA is pending and must complete before
+claiming the Windows failure is fixed in CI.
