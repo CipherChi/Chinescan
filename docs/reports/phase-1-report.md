@@ -1221,3 +1221,15 @@ The last pushed SHA `d806d55e9f31542de42ab4be4f00bf642d36f260` passed quality, d
 container, secret scan, offline benchmarks, and all CodeQL analyses; its Windows worker step failed
 before this liveness fix. Remote verification for the next SHA is pending and must complete before
 claiming the Windows failure is fixed in CI.
+
+### First liveness-fix CI run — `095be27430a79a4cfbce41b60f66df626d6576f7`
+
+- [CI run 40709926208](https://github.com/CipherChi/Chinescan/actions/runs/40709926208): Windows managed-malware acceptance passed, including the mocked-control step and all three actual Windows containment tests. Dashboard/browser, container, and secret scan passed. Quality failed at Linux mypy before running pytest: Linux ctypes type stubs do not declare `WinDLL` or `get_last_error`.
+- [Offline benchmarks run 40709925897](https://github.com/CipherChi/Chinescan/actions/runs/40709925897) passed.
+- [Push/security run 40709926727](https://github.com/CipherChi/Chinescan/actions/runs/40709926727) passed all three CodeQL analyses.
+
+The Windows API symbols now use guarded `getattr` lookups. If the API is unavailable or an error
+is inconclusive, recovery conservatively treats the process as alive instead of marking its job
+interrupted. After this adjustment, local mypy passes for all 52 source files, Ruff passes, and the
+complete managed-malware test file passes (35 passed on Windows). Remote verification of the
+corrected typing and final SHA is pending.
