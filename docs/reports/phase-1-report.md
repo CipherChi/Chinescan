@@ -1135,3 +1135,25 @@ worker, uploaded, or sent for external enrichment.
 
 This report records investigation and local results only. Remote CI results for the repair commit
 must be added after that exact SHA completes.
+
+### First repair commit follow-up — `52c019bbfeea52da7c1d645c9c45f3dcf7548984`
+
+The first repair commit was pushed normally to `main`. Its workflows completed as follows:
+
+- [CI run 40662092608](https://github.com/CipherChi/Chinescan/actions/runs/40662092608): dashboard/browser, container, and secret scan passed. Quality failed because four parameter cases in the new Win32 thread-control test used `ctypes.wintypes` fields whose widths vary by host ABI; all four failed on Linux.
+- The Windows worker job also failed on that run. The mocked step printed `26 passed, 3 deselected in 1.50s` and then Actions reported exit 1 without a traceback or pytest failure summary. The real-worker step did not run. This differs from the earlier logged `KeyboardInterrupt`; its cause is still unknown.
+- [Offline benchmarks run 40662092742](https://github.com/CipherChi/Chinescan/actions/runs/40662092742) passed.
+- [Push/security run 40662092322](https://github.com/CipherChi/Chinescan/actions/runs/40662092322) passed, including CodeQL analyses for JavaScript/TypeScript, Python, and Actions.
+
+The Win32 `THREADENTRY32` mock now uses fixed-width 32-bit fields, matching the Windows API structure on Linux test hosts. The Windows mocked acceptance command now also requests `--full-trace` to capture any hidden pytest interruption on the hosted runner.
+
+Follow-up verification on the working tree:
+
+| Exact command | Exit | Result |
+| --- | ---: | --- |
+| Linux container: `uv run --locked --extra dev python -c "import pytest; raise SystemExit(pytest.main(['tests/unit/test_managed_malware.py::test_resume_suspended_process_requires_one_resumable_primary_thread', '-q']))"` | 0 | 8 passed; fixed-width Win32 structure cases pass on Linux. Container used Python 3.12.16; pytest emitted only the expected cache warning because the repository mount was read-only. |
+| `.venv\Scripts\pytest.exe tests/unit/test_managed_malware.py -q --full-trace -k "not test_actual_windows_contained_worker_returns_bounded_synthetic_result and not test_actual_windows_manager_persists_contained_synthetic_analysis and not test_actual_job_object_terminates_synthetic_child_process_tree"` | 0 | 26 passed, 3 deselected. |
+| `.venv\Scripts\pytest.exe tests/unit/test_managed_malware.py -q --full-trace -k "test_actual_windows_contained_worker_returns_bounded_synthetic_result or test_actual_windows_manager_persists_contained_synthetic_analysis or test_actual_job_object_terminates_synthetic_child_process_tree"` | 0 | 3 passed, 26 deselected on Windows. |
+
+These follow-up changes are not yet verified remotely. The next pushed SHA must pass the complete
+CI and security workflows before this report can state final verification.

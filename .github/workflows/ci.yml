@@ -101,7 +101,7 @@ jobs:
       - run: uv sync --locked --python 3.12 --extra dev
       # Keep mocked control-path tests separate from real worker launches. The latter
       # start contained child processes and have independent temp/state lifetimes.
-      - run: uv run --locked --extra dev pytest tests/unit/test_managed_malware.py -q -k "not test_actual_windows_contained_worker_returns_bounded_synthetic_result and not test_actual_windows_manager_persists_contained_synthetic_analysis and not test_actual_job_object_terminates_synthetic_child_process_tree"
+      - run: uv run --locked --extra dev pytest tests/unit/test_managed_malware.py -q -k "not test_actual_windows_contained_worker_returns_bounded_synthetic_result and not test_actual_windows_manager_persists_contained_synthetic_analysis and not test_actual_job_object_terminates_synthetic_child_process_tree" --full-trace
       # Run every real Windows containment check together in a fresh pytest process.
       - run: uv run --locked --extra dev pytest tests/unit/test_managed_malware.py -q -k "test_actual_windows_contained_worker_returns_bounded_synthetic_result or test_actual_windows_manager_persists_contained_synthetic_analysis or test_actual_job_object_terminates_synthetic_child_process_tree" --full-trace
 
