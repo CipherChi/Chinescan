@@ -23,15 +23,22 @@ from chinescan.core.cases import (
     CaseWorkflow,
     CaseWorkflowError,
 )
+from chinescan.core.config.settings import Settings
 from chinescan.core.logging.redaction import redact
 from chinescan.core.models.common import Confidence, FindingCategory, Severity
 from chinescan.core.models.finding import Finding
 from chinescan.core.models.investigation import Alert, Case, CaseStatus, Event, Scan, TimelineEntry
 from chinescan.core.reporting import ReportingError, render_case_report, render_report, scan_data
 from chinescan.core.storage.sqlite import SQLiteRepository
+from chinescan.malware_analysis.managed import (
+    ManagedSampleError,
+    create_backend,
+    safe_display_name,
+)
 from chinescan.web.auth import LoginThrottle, Session, SessionStore, verify_operator
 from chinescan.web.code_jobs import CodeJobManager, ProjectConfigurationError, ProjectRegistry
 from chinescan.web.log_jobs import LogJobManager, LogSourceError, LogSourceRegistry
+from chinescan.web.malware_jobs import MalwareDashboardManager
 
 COOKIE_NAME = "chinescan_session"
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
@@ -143,6 +150,65 @@ class CodeJobCreateRequest(BaseModel):
 class LogJobCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_id: str = Field(min_length=1, max_length=80)
+
+
+class MalwareJobCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    registry_id: str | None = Field(default=None, min_length=1, max_length=80)
+    sample_id: str | None = Field(default=None, min_length=1, max_length=255)
+    profile: Literal["builtin_static"] = "builtin_static"
+
+
+class MalwareSampleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    registry_id: str | None
+    display_name: str
+    state: Literal["registered", "managed", "unavailable"]
+    source_available: bool
+    source_size_bytes: int | None
+    sample_id: str | None
+    sha256: str | None
+    managed_size_bytes: int | None
+    availability: str | None
+
+
+class MalwareJobResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    sample_id: str
+    status: Literal["queued", "running", "succeeded", "failed", "interrupted"]
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
+    analysis_id: str | None
+    warning: str | None
+    analysis_status: Literal["complete", "partial"] | None = None
+
+
+class MalwareJobPageResponse(BaseModel):
+    items: list[MalwareJobResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class MalwareAnalysisResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    analysis_id: str
+    sample_id: str
+    profile: str
+    status: Literal["complete", "partial"]
+    created_at: str
+    size_bytes: int
+    hashes: dict[str, str]
+    file_type: str
+    architecture: str | None
+    printable_string_count: int
+    indicator_count: int
+    indicators: list[dict[str, str]]
+    warnings: list[str]
+    engines: dict[str, dict[str, Any]]
+    evidence_note: str
 
 
 class CodeProjectResponse(BaseModel):
@@ -263,6 +329,8 @@ def create_app(
     serve_frontend: bool = True,
     projects_path: Path | str | None = None,
     log_sources_path: Path | str | None = None,
+    malware_registry_path: Path | str | None = None,
+    settings: Settings | None = None,
 ) -> FastAPI:
     """Create an application instance; sessions and throttling live in this process."""
     repository = SQLiteRepository(database_path)
@@ -295,14 +363,51 @@ def create_app(
         ],
     )
     log_jobs = LogJobManager(repository, db_lock, log_registry)
+    malware_jobs: MalwareDashboardManager | None = None
+    malware_diagnostic = (
+        "Execution unavailable: configure managed storage and an operator registry."
+    )
+    active_settings = settings or Settings(_env_file=None)
+    malware_config = (
+        Path(malware_registry_path)
+        if malware_registry_path
+        else Path.home() / ".config" / "chinescan" / "malware-samples.toml"
+    )
+    try:
+        backend, sample_registry = create_backend(
+            repository,
+            active_settings,
+            malware_config,
+            additional_protected_paths=[
+                credentials,
+                Path(projects_path)
+                if projects_path
+                else Path.home() / ".config" / "chinescan" / "projects.toml",
+                Path(log_sources_path)
+                if log_sources_path
+                else Path.home() / ".config" / "chinescan" / "log-sources.toml",
+            ],
+        )
+        malware_jobs = MalwareDashboardManager(repository, backend, sample_registry)
+        malware_diagnostic = (
+            "Execution unavailable: Windows Job Object containment is required."
+            if not malware_jobs.execution_available
+            else ""
+        )
+    except (ManagedSampleError, OSError, ValueError):
+        malware_diagnostic = "Managed storage or operator registry configuration is unavailable."
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         jobs.start()
         log_jobs.start()
+        if malware_jobs is not None:
+            malware_jobs.start()
         try:
             yield
         finally:
+            if malware_jobs is not None:
+                malware_jobs.stop()
             log_jobs.stop()
             jobs.stop()
         repository.close()
@@ -314,6 +419,7 @@ def create_app(
     application.state.project_registry = registry
     application.state.log_source_registry = log_registry
     application.state.log_job_manager = log_jobs
+    application.state.malware_job_manager = malware_jobs
 
     @application.exception_handler(RequestValidationError)
     async def validation_error_handler(_request: Request, exc: RequestValidationError) -> Response:
@@ -492,6 +598,133 @@ def create_app(
         if item is None:
             raise HTTPException(status_code=404, detail="Code assessment job not found.")
         return item
+
+    @application.get("/api/malware/capability")
+    def malware_capability(_session: Session = Depends(current_session)) -> dict[str, Any]:  # noqa: B008
+        return {
+            "execution_available": bool(malware_jobs and malware_jobs.execution_available),
+            "diagnostic": (
+                malware_jobs.execution_diagnostic if malware_jobs else malware_diagnostic
+            ),
+            "historical_views_available": True,
+        }
+
+    @application.get("/api/malware/samples", response_model=list[MalwareSampleResponse])
+    def malware_samples(_session: Session = Depends(current_session)) -> list[dict[str, Any]]:  # noqa: B008
+        if malware_jobs is None:
+            raise HTTPException(status_code=503, detail="Sample registry is unavailable.")
+        try:
+            entries = malware_jobs.entries()
+        except ManagedSampleError as exc:
+            raise HTTPException(status_code=503, detail="Sample registry is unavailable.") from exc
+        return [
+            {**entry, "display_name": safe_display_name(str(entry["display_name"]))}
+            for entry in entries
+        ]
+
+    @application.get("/api/malware/samples/{sample_id}", response_model=MalwareSampleResponse)
+    def malware_sample_detail(
+        sample_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:  # noqa: B008
+        if len(sample_id) > 255:
+            raise HTTPException(status_code=404, detail="Managed sample not found.")
+        raw = repository.get("malware_sample", sample_id)
+        if raw is None:
+            raise HTTPException(status_code=404, detail="Managed sample not found.")
+        availability = str(raw.get("availability", "unavailable"))
+        if malware_jobs is None:
+            availability = "unavailable"
+        elif availability == "available":
+            try:
+                malware_jobs.manager.store.verify(
+                    str(raw.get("object_key", "")), str(raw.get("sha256", ""))
+                )
+            except ManagedSampleError:
+                availability = "unavailable"
+                raw["availability"] = availability
+                repository.save("malware_sample", sample_id, raw)
+        return {
+            "registry_id": str(raw.get("registry_id", ""))[:80],
+            "display_name": safe_display_name(str(raw.get("display_name", "Sample"))),
+            "state": "managed" if availability == "available" else "unavailable",
+            "source_available": False,
+            "source_size_bytes": None,
+            "sample_id": str(raw.get("sample_id", "")),
+            "sha256": str(raw.get("sha256", "")),
+            "managed_size_bytes": raw.get("size_bytes")
+            if isinstance(raw.get("size_bytes"), int)
+            else None,
+            "availability": availability,
+        }
+
+    @application.post("/api/malware/jobs", response_model=MalwareJobResponse, status_code=202)
+    def create_malware_job(
+        payload: MalwareJobCreateRequest,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:  # noqa: B008
+        if malware_jobs is None:
+            raise HTTPException(status_code=503, detail=malware_diagnostic)
+        if (payload.registry_id is None) == (payload.sample_id is None):
+            raise HTTPException(
+                status_code=422,
+                detail="Provide exactly one registered sample ID or managed sample ID.",
+            )
+        try:
+            job = (
+                malware_jobs.submit(payload.registry_id)
+                if payload.registry_id is not None
+                else malware_jobs.submit_managed(str(payload.sample_id))
+            )
+            return _malware_job_view(job, repository)
+        except OverflowError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail="The malware analysis queue is full (one active and four queued).",
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=503 if not malware_jobs.execution_available else 409,
+                detail=str(exc)[:300],
+            ) from exc
+        except (ValueError, ManagedSampleError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)[:300]) from exc
+
+    @application.get("/api/malware/jobs", response_model=MalwareJobPageResponse)
+    def list_malware_jobs(
+        _session: Session = Depends(current_session),  # noqa: B008
+        limit: Annotated[int, Query(ge=1, le=100)] = 25,
+        offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+    ) -> dict[str, Any]:  # noqa: B008
+        rows, total = repository.page_records(
+            "malware_job", limit=limit, offset=offset, sort_by="created_at", descending=True
+        )
+        return {
+            "items": [_malware_job_view(row, repository) for row in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @application.get("/api/malware/jobs/{job_id}", response_model=MalwareJobResponse)
+    def get_malware_job(
+        job_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:  # noqa: B008
+        row = repository.get("malware_job", job_id) if len(job_id) <= 255 else None
+        if row is None:
+            raise HTTPException(status_code=404, detail="Malware job not found.")
+        return _malware_job_view(row, repository)
+
+    @application.get("/api/malware/analyses/{analysis_id}", response_model=MalwareAnalysisResponse)
+    def get_malware_analysis(
+        analysis_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:  # noqa: B008
+        raw = repository.get("malware_analysis", analysis_id) if len(analysis_id) <= 255 else None
+        if raw is None:
+            raise HTTPException(status_code=404, detail="Malware analysis not found.")
+        return _malware_analysis_view(raw)
 
     @application.get("/api/log/sources", response_model=list[LogSourceResponse])
     def log_sources(_session: Session = Depends(current_session)) -> list[dict[str, str]]:  # noqa: B008
@@ -754,6 +987,10 @@ def create_app(
                     ),
                     "title": str(getattr(record, "title", "")),
                     "severity": raw_severity.value if raw_severity is not None else None,
+                    "sample_id": getattr(record, "sample_id", None),
+                    "completeness": getattr(record, "status", None)
+                    if record_type == "malware_analysis"
+                    else None,
                 }
             )
         view = {
@@ -920,6 +1157,87 @@ def create_app(
         application.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
     return application
+
+
+def _malware_job_view(raw: dict[str, Any], repository: SQLiteRepository) -> dict[str, Any]:
+    analysis_id = raw.get("analysis_id")
+    analysis = repository.get("malware_analysis", str(analysis_id)) if analysis_id else None
+    return {
+        "job_id": str(raw.get("job_id", "")),
+        "sample_id": str(raw.get("sample_id", "")),
+        "status": raw.get("status", "failed"),
+        "created_at": str(raw.get("created_at", "")),
+        "started_at": raw.get("started_at"),
+        "finished_at": raw.get("finished_at"),
+        "analysis_id": raw.get("analysis_id"),
+        "warning": redact(str(raw.get("warning"))[:500]) if raw.get("warning") else None,
+        "analysis_status": analysis.get("status") if analysis else None,
+    }
+
+
+def _malware_analysis_view(raw: dict[str, Any]) -> dict[str, Any]:
+    raw_result = raw.get("result")
+    result: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
+    raw_hashes = result.get("hashes")
+    hashes: dict[str, Any] = raw_hashes if isinstance(raw_hashes, dict) else {}
+    raw_indicators = result.get("indicators")
+    indicators: list[Any] = raw_indicators if isinstance(raw_indicators, list) else []
+    raw_warnings = result.get("warnings")
+    warnings: list[Any] = raw_warnings if isinstance(raw_warnings, list) else []
+    raw_engines = raw.get("engines")
+    engines: dict[str, Any] = raw_engines if isinstance(raw_engines, dict) else {}
+    safe_indicators = []
+    for item in indicators[:500]:
+        if (
+            isinstance(item, dict)
+            and isinstance(item.get("kind"), str)
+            and isinstance(item.get("value"), str)
+        ):
+            safe_indicators.append(
+                {"kind": redact(item["kind"][:40]), "value": redact(item["value"][:2048])}
+            )
+    safe_engines = {}
+    for name in ("yara", "clamav"):
+        state = engines.get(name, {})
+        if isinstance(state, dict):
+            safe_engines[name] = {
+                key: str(state.get(key, "not_checked"))[:40]
+                for key in (
+                    "requested",
+                    "installation",
+                    "configuration",
+                    "real_binary_verification",
+                )
+            }
+    return {
+        "analysis_id": str(raw.get("analysis_id", "")),
+        "sample_id": str(raw.get("sample_id", "")),
+        "profile": str(raw.get("profile", "builtin_static"))[:40],
+        "status": raw.get("status", "partial"),
+        "created_at": str(raw.get("created_at", "")),
+        "size_bytes": result.get("size_bytes", 0),
+        "hashes": {
+            key: str(hashes[key])
+            for key in ("md5", "sha1", "sha256")
+            if isinstance(hashes.get(key), str)
+            and len(hashes[key]) == {"md5": 32, "sha1": 40, "sha256": 64}[key]
+            and all(character in "0123456789abcdef" for character in hashes[key].lower())
+        },
+        "file_type": redact(str(result.get("file_type", "unknown"))[:120]),
+        "architecture": redact(str(result["architecture"])[:80])
+        if isinstance(result.get("architecture"), str)
+        else None,
+        "printable_string_count": result.get("printable_string_count", 0),
+        "indicator_count": result.get("indicator_count", len(safe_indicators)),
+        "indicators": safe_indicators,
+        "warnings": [redact(str(item)[:500]) for item in warnings[:50]],
+        "engines": safe_engines,
+        "evidence_note": (
+            "Indicators are untrusted candidate evidence, not confirmed maliciousness. "
+            "URLs and HTML-like values are inert text. Sample bytes, printable strings, "
+            "archive names, paths, and raw worker output are withheld."
+        ),
+    }
 
 
 def _scan_summary(scan: Scan) -> dict[str, Any]:

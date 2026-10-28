@@ -13,6 +13,7 @@ from chinescan.core.models.common import Severity
 from chinescan.core.models.finding import Finding
 from chinescan.core.models.investigation import Alert, Scan
 from chinescan.core.storage.repository import Repository
+from chinescan.malware_analysis.managed import safe_display_name
 
 
 class ReportingError(ValueError):
@@ -163,6 +164,8 @@ def render_case_report(repository: Repository, case_id: str, output_format: str)
             "timeline_entry",
             "indicator",
             "authorization_record",
+            "malware_sample",
+            "malware_analysis",
         )
     }
     persisted_link_sources = {
@@ -170,6 +173,8 @@ def render_case_report(repository: Repository, case_id: str, output_format: str)
     }
     for (record_type, record_id), record in sorted(context.records.items()):
         payload = record.model_dump(mode="json")
+        if record_type in {"malware_sample", "malware_analysis"}:
+            payload = _reviewed_malware_case_record(record_type, payload)
         records.setdefault(record_type, []).append(
             {
                 "record_id": record_id,
@@ -220,6 +225,78 @@ def render_case_report(repository: Repository, case_id: str, output_format: str)
     if output_format == "markdown":
         return _case_markdown(payload)
     return _case_html(payload)
+
+
+def _reviewed_malware_case_record(record_type: str, value: dict[str, Any]) -> dict[str, Any]:
+    """Allowlist malware case fields; never export opaque storage keys or sample bytes."""
+    if record_type == "malware_sample":
+        return {
+            "sample_id": value.get("sample_id"),
+            "display_name": safe_display_name(str(value.get("display_name", ""))),
+            "sha256": value.get("sha256"),
+            "size_bytes": value.get("size_bytes"),
+            "availability": value.get("availability"),
+            "withheld": "Original path, managed object key, and sample bytes are not included.",
+        }
+    raw_result = value.get("result")
+    result: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
+    raw_indicators = result.get("indicators")
+    indicators: list[Any] = raw_indicators if isinstance(raw_indicators, list) else []
+    raw_warnings = result.get("warnings")
+    warnings: list[Any] = raw_warnings if isinstance(raw_warnings, list) else []
+    raw_hashes = result.get("hashes")
+    hashes: dict[str, Any] = raw_hashes if isinstance(raw_hashes, dict) else {}
+    engines_value = value.get("engines")
+    engines: dict[str, Any] = engines_value if isinstance(engines_value, dict) else {}
+    safe_engines: dict[str, dict[str, str]] = {}
+    for engine_name in ("yara", "clamav"):
+        engine_value = engines.get(engine_name)
+        if not isinstance(engine_value, dict):
+            continue
+        safe_engines[engine_name] = {
+            key: redact(str(engine_value.get(key, "not_checked"))[:40])
+            for key in (
+                "requested",
+                "installation",
+                "configuration",
+                "real_binary_verification",
+            )
+        }
+    return {
+        "analysis_id": value.get("analysis_id"),
+        "sample_id": value.get("sample_id"),
+        "profile": value.get("profile"),
+        "status": value.get("status"),
+        "created_at": value.get("created_at"),
+        "size_bytes": result.get("size_bytes"),
+        "hashes": {
+            key: hashes[key]
+            for key in ("md5", "sha1", "sha256")
+            if isinstance(hashes.get(key), str)
+            and len(hashes[key]) == {"md5": 32, "sha1": 40, "sha256": 64}[key]
+            and all(character in "0123456789abcdef" for character in hashes[key].lower())
+        },
+        "file_type": redact(str(result.get("file_type", "unknown"))[:120]),
+        "architecture": result.get("architecture")
+        if isinstance(result.get("architecture"), str)
+        else None,
+        "indicator_count": result.get("indicator_count", len(indicators)),
+        "indicators": [
+            {
+                "kind": redact(str(item.get("kind", ""))[:40]),
+                "value": redact(str(item.get("value", ""))[:2048]),
+            }
+            for item in indicators[:500]
+            if isinstance(item, dict)
+        ],
+        "warnings": [redact(str(item)[:500]) for item in warnings[:50]],
+        "engines": safe_engines,
+        "evidence_note": (
+            "Indicators are untrusted candidate evidence, not confirmed maliciousness. "
+            "Sample bytes, arbitrary strings, archive names, paths, credentials, and raw "
+            "worker output are withheld."
+        ),
+    }
 
 
 def _record_source(record_type: str, record: Any) -> str:

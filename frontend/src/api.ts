@@ -1,4 +1,4 @@
-import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogJob, LogAlert, LogEvent, LogTimeline } from './types';
+import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample } from './types';
 
 let csrfToken = '';
 export function setCsrfToken(token: string) { csrfToken = token; }
@@ -46,6 +46,13 @@ export const api = {
   codeJobs: () => request<Page<CodeJob>>('/api/code/jobs?limit=50&offset=0'),
   codeJob: (id: string) => request<CodeJob>(`/api/code/jobs/${encodeURIComponent(id)}`),
   startCodeJob: (project_id: string) => request<CodeJob>('/api/code/jobs', { method: 'POST', body: JSON.stringify({ project_id }) }),
+  malwareCapability: () => request<MalwareCapability>('/api/malware/capability'),
+  malwareSamples: () => request<MalwareSample[]>('/api/malware/samples'),
+  malwareJobs: () => request<Page<MalwareJob>>('/api/malware/jobs?limit=50&offset=0'),
+  startMalwareRegistryJob: (registry_id: string) => request<MalwareJob>('/api/malware/jobs', { method: 'POST', body: JSON.stringify({ registry_id, profile: 'builtin_static' }) }),
+  startManagedMalwareJob: (sample_id: string) => request<MalwareJob>('/api/malware/jobs', { method: 'POST', body: JSON.stringify({ sample_id, profile: 'builtin_static' }) }),
+  malwareJob: (id: string) => request<MalwareJob>(`/api/malware/jobs/${encodeURIComponent(id)}`),
+  malwareAnalysis: (id: string) => request<MalwareAnalysis>(`/api/malware/analyses/${encodeURIComponent(id)}`),
   logSources: () => request<LogSource[]>('/api/log/sources'),
   logJobs: () => request<Page<LogJob>>('/api/log/jobs?limit=50&offset=0'),
   startLogJob: (source_id: string) => request<LogJob>('/api/log/jobs', { method: 'POST', body: JSON.stringify({ source_id }) }),

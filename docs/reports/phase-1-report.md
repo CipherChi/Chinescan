@@ -934,3 +934,101 @@ package lines for these findings: [ncurses](https://security-tracker.debian.org/
 [util-linux](https://security-tracker.debian.org/tracker/source-package/util-linux), and
 [Perl Archive::Tar](https://security-tracker.debian.org/tracker/CVE-2026-9538). Moving the base
 image to a newer Debian release or carrying package backports needs a separate security decision.
+
+## Stage B2 resume verification — 2026-10-27
+
+This section records checks rerun against the resumed B2 worktree. It supersedes earlier B2
+verification statements where these commands were rerun. Python checks were run in PowerShell with
+`$env:PYTHONPATH='C:\src\Chinescan;.venv\Lib\site-packages';` before the listed `py -3.12`
+command. The lock check used the repository's `.venv312` executable.
+
+| Command | Result |
+| --- | --- |
+| `py -3.12 --version` | Python 3.12.10 |
+| `py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80` | **Interrupted, not passed:** 105 passed, 5 deselected, then `KeyboardInterrupt` while entering malware worker-control tests; no coverage summary or threshold result was produced. Full-trace localized one interruption to `Thread.start()` waiting on its startup event. |
+| `py -3.12 -m pytest --cov=chinescan --cov-report=term --cov-fail-under=80 -k "not test_worker_control_path_timeout_and_output_overflow_close_pipes"` | **Interrupted, not passed:** 105 passed, 6 deselected, then `KeyboardInterrupt`; no coverage summary. |
+| `py -3.12 -m pytest tests/unit/test_recovery.py -q` | **Passed:** 15 passed in 13.20s. Earlier sequential runs were 15 passed in 24.29s, then 13 passed / 2 failed in 25.98s due WinError 5 at backup publication. |
+| `py -3.12 -m pytest tests/unit/test_web_api.py -q` | **Passed:** 10 passed in 17.89s, including B2 API authentication/redaction coverage. |
+| `py -3.12 -m pytest tests/unit/test_migration.py tests/unit/test_cases.py tests/unit/test_reporting.py -q` | **Passed:** 11 passed in 6.17s. |
+| `py -3.12 -m pytest tests/unit/test_managed_malware.py -q` | **Not passed:** one run was interrupted after 17 passes; another run filtered to non-process-control cases produced 16 passed / 1 failed / 4 deselected because the backup-with-malware-metadata case hit the same publication error. |
+| `py -3.12 -m pytest tests/unit/test_managed_malware.py::test_worker_control_path_timeout_and_output_overflow_close_pipes -vv` | **Passed:** 1 passed in 0.66s when isolated. |
+| `py -3.12 -m pytest tests/unit/test_managed_malware.py::test_actual_windows_contained_worker_returns_bounded_synthetic_result tests/unit/test_managed_malware.py::test_actual_windows_manager_persists_contained_synthetic_analysis -vv` | **Passed:** 2 actual Windows worker tests passed in 2.56s. |
+| `py -3.12 -m pytest tests/unit/test_managed_malware.py::test_actual_job_object_terminates_synthetic_child_process_tree -vv` | **Passed:** 1 actual Windows Job Object process-tree test passed in 0.76s. |
+| `py -3.12 -m pytest tests/unit/test_managed_malware.py::test_recovery_keeps_metadata_but_does_not_reconstruct_missing_sample -vv --tb=long` | **Passed in isolation:** 1 passed in 2.64s, after the same test failed during the filtered file run at backup publication. |
+| `py -3.12 -m ruff check .` | **Passed:** All checks passed. |
+| `py -3.12 -m ruff format --check .` | **Passed:** 125 files already formatted. |
+| `py -3.12 -m mypy --strict chinescan` | **Passed:** no issues in 52 source files. |
+| `& .\.venv312\Scripts\uv.exe lock --check` | **Passed:** resolved 76 packages; lock is consistent. |
+| `npm run typecheck` | **Passed.** |
+| `npm test -- --reporter=dot` | **Passed:** 4 files, 8 tests. |
+| `npm run build` | **Passed:** Vite production build, 21 modules. |
+| `npm run test:e2e` | **Passed on rerun:** 6 passed in 1.3m. Includes actual Windows contained-worker triage, persisted result/completeness, case linking, redacted JSON export, refresh persistence, and logout denial. The prior run had 4 passed / 2 failed: one stale Playwright APIRequestContext cookie assertion (corrected to use browser-context fetch) and one session-expiry fixture sign-in timeout; both passed on rerun. |
+| `npm run test:e2e -- --grep "actual contained malware triage"` | **Passed:** 1 passed in 31.6s on current test code. This exercised the actual Windows built-in worker; it was not mocked. |
+| `git diff --check` | Passed before this section was appended; rerun after final edits. |
+
+### WinError 5 investigation
+
+The captured exception is `PermissionError: [WinError 5] Access is denied` from
+`os.rename(staging, output)` in `chinescan/core/storage/recovery.py` while publishing a complete
+backup staging directory to a destination that did not exist. Two recovery tests in one sequential
+run hit this operation. Source and database handles are closed before publication; verification
+and hashing use closed file contexts, and failed staging cleanup completed. Pytest uses per-test
+`tmp_path` directories. No concurrent Python test process was active during the initial isolated
+reproductions; the same B2 recovery test failed once in a sequential focused file run and then passed
+when isolated. The parent test directory ACL grants full access to owner, SYSTEM, and administrators;
+the current user is non-administrator. The code's `chmod(0700/0600)` calls do not prove Windows ACL
+enforcement. No evidence established an open handle, shared path collision, or specific permission
+cause. An isolated formerly failing verification test and a later full recovery run passed, but
+another earlier full recovery run had two publication failures. No retry or publication semantic
+change was made. **Root cause remains unresolved; recovery publication is not fully verified.**
+
+Five optional `real_scanner` cases were deselected by the configured suite because no YARA/ClamAV
+binary and signature database were installed or verified. Neither engine was enabled or invoked.
+No external submission, new dependency, commit, or push was performed. Windows Job Object controls
+are process containment only; they do not provide an OS sandbox or remove filesystem race conditions.
+
+### Release-blocker diagnosis — 2026-10-27
+
+| Status | Result |
+| --- | --- |
+| B2 browser acceptance | **Passed:** 6/6 in the final full Playwright run; actual Windows contained worker, persisted analysis, case link, redacted report export, refresh, and logout protection. |
+| Full Python acceptance | **Incomplete:** every attempted full run ended with `KeyboardInterrupt`; no completed full-suite coverage percentage or threshold result exists. |
+| Backup publication reliability | **Unresolved:** earlier recovery tests raised WinError 5 at publication; no root cause or code change established. |
+| Release readiness | **Blocked** pending a completed full Python acceptance run and backup publication reliability resolution. |
+
+The verbose managed-malware trace identifies the active item and stack, not a test assertion failure:
+17 tests completed, then `KeyboardInterrupt` arrived on the main thread while
+`threading.Thread.start()` waited for its new reader thread to initialize. The test patches
+`subprocess.Popen` and uses a fake process and fake Job Object; it launches and terminates no real
+worker. A temporary signal observer recorded SIGINT (signal 2), with only the main thread present,
+within milliseconds of that item's setup hook. In a separate detached run, SIGINT arrived during the
+SQLite backup progress callback at `recovery.py` line 562 after 14 tests, so the event is not specific
+to the reader-thread test. Repository searches found no signal or console-control operation in this
+test file; the explicit fake `KeyboardInterrupt` in `test_external_scanners.py` is unrelated and is
+not part of the isolated reproduction. A 20-second Python sleep completed with exit code 0. A
+PowerShell background-job attempt ended with Windows status `-1073741510` (`STATUS_CONTROL_C_EXIT`)
+before it wrote its exit file. Console process-list diagnostics showed the pytest process and its
+`py.exe` parent attached to a console, but did not identify which host component generated the
+control event. Thus a real external/control SIGINT is evidenced; whether its source is the Codex
+execution host, its console lifecycle, or another host process is not established. No signal was
+suppressed and no worker-control tests were skipped.
+
+A corrected diagnostic loop ran 500 B2-shaped backups serially, each using a unique temporary
+directory under the pytest temporary root and valid managed sample/job metadata. It exited 0 with
+zero publication errors. Earlier diagnostic wrappers saw two `OSError` events at the wrapped rename
+but then raised their own formatting `TypeError`, so they did not preserve the error code or a valid
+state snapshot and are excluded as diagnostic evidence. The recorded real test trace from the prior
+recovery runs remains `PermissionError: [WinError 5] Access is denied` at
+`os.rename(staging, output)`. It occurred while the staging directory existed and the destination
+was absent; the backup function's cleanup removed staging and left the destination absent. Handles
+to the source and destination SQLite connections are closed before publication by code inspection.
+The 500-run probe found no failure at which to capture file attributes, same-volume state, or an
+OS-level holder list. The cause remains unestablished; no retry, overwrite, weakened integrity
+check, or skipped recovery test was introduced.
+
+Smallest next diagnostic action: run the managed-malware focused suite from an independent,
+persistent Windows PowerShell session outside the Codex command process group, and return its exit
+code plus the failing item/trace if SIGINT recurs. For backup publication, the next failing event
+must be captured before cleanup with Windows file attributes and Restart Manager's resource-holder
+list; the current isolated 500-run reproduction did not trigger it. Until both signals are resolved,
+do not mark the release checks complete.

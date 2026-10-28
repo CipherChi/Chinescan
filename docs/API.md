@@ -110,15 +110,56 @@ also require the same-origin `Origin` check and current `X-CSRF-Token` as logout
 | `GET /api/cases/{case_id}` | Case status, severity, notes, validated persisted link metadata, reviewed linked-record summaries, chronological activity/source timeline, warnings, and severity counts. Evidence is text and passed through shared redaction. |
 | `POST /api/cases/{case_id}/status` | `{status}` uses the workflow transition table. Closed cases cannot transition further. |
 | `POST /api/cases/{case_id}/notes` | `{body}` appends a note (1–8000 characters). The authenticated operator is not written into the legacy unverified author-label field. Notes are not editable or deleted through the API. |
-| `POST /api/cases/{case_id}/links` | `{record_type, record_id}` validates supported persisted records through `CaseWorkflow`; repeating an existing link is idempotent. Artifacts are not persisted or supported. |
+| `POST /api/cases/{case_id}/links` | `{record_type, record_id}` validates supported persisted records through `CaseWorkflow`; repeating an existing link is idempotent. Supported malware types are `malware_sample` (stable identity) and `malware_analysis` (one result). |
 | `GET /api/cases/{case_id}/report/{json|markdown|html}` | Generates a redacted report in memory, capped at 2 MB, and returns it as an attachment. HTML uses `Content-Disposition: attachment` and is not rendered inline. |
 | `GET /api/scans/{scan_id}/report/{json|markdown|html|csv|sarif}` | Uses the existing scan report renderer and formats. The report is a download attachment with a server-chosen filename. |
 
 Case report generation rejects cases above configured link/note/activity limits; scan exports reject
 more than 10,000 findings. All IDs are opaque record IDs, never paths. Unsupported format segments
 are rejected by route validation. Case persistence still uses the existing JSON payload schema and
-does not add SQL foreign keys. Missing legacy references remain warnings. No artifacts,
-backup/restore controls, or malware intake are exposed.
+does not add SQL foreign keys. Missing legacy references remain warnings. No artifacts or
+backup/restore controls are exposed.
+
+## Malware dashboard (Stage B2)
+
+All malware routes require the same authenticated local session, loopback/Host guard, body bounds,
+and same-origin policy as the rest of the dashboard. Mutating job and case-link requests require
+`X-CSRF-Token`. The API accepts operator registry IDs or persisted managed sample IDs only. Unknown
+request keys are rejected; paths, object keys, executable names, scanner arguments, and environment
+values are never accepted from the browser.
+
+| Method and path | Contract |
+| --- | --- |
+| `GET /api/malware/capability` | Whether execution is supported, a bounded diagnostic, and whether persisted historical views are available. |
+| `GET /api/malware/samples` | Operator registry entries and persisted sample identities; states distinguish `registered` (not ingested), `managed`, and `unavailable`. No original path or managed key is returned. An un-ingested entry has no verified hash. |
+| `GET /api/malware/samples/{sample_id}` | Reviewed persisted identity metadata only. |
+| `POST /api/malware/jobs` | `{"registry_id":"...","profile":"builtin_static"}` ingests an approved entry and queues it, or `{"sample_id":"...","profile":"builtin_static"}` reuses an available managed identity. Exactly one ID is required. Returns `202`; queue full is `429`, unsupported execution is `503`, invalid/unavailable ID is `422`. Duplicate active submissions for the same managed identity are `409`. |
+| `GET /api/malware/jobs` | Bounded page (`limit` 1–100, `offset` 0–100000) with job state, timestamps, linked analysis ID, and separate analysis completeness. |
+| `GET /api/malware/jobs/{job_id}` | Persisted job state and linked analysis completeness. Job `succeeded` does not imply analysis `complete`. |
+| `GET /api/malware/analyses/{analysis_id}` | Allowlisted hashes, actual byte count/type, architecture, bounded candidate indicators, warning list, and YARA/ClamAV availability/verification states. Values are inert text; no external links are created. |
+
+The service uses one application-owned queue thread, but analysis runs only in the fixed child worker
+after Windows Job Object assignment and queried-limit verification. One job is active and four may
+wait. HTTP submission returns without waiting for analysis. Unsupported hosts keep historical views
+available and disable execution; no thread-based or uncontained fallback exists. Shutdown stops new
+submissions, waits through the worker's bounded deadline, records unfinished jobs as interrupted
+where persistence remains available, and then closes the repository. Restart reconciliation marks
+stale queued/running work interrupted and preserves jobs owned by another live manager. No user
+cancellation is provided. There is no sample-byte or object-key serving endpoint.
+
+The built-in worker runs only on Windows and only after Job Object setup, assignment, and limits are
+verified. This limits worker process-tree resources and lifetime but does not isolate filesystem or
+network access; it is not an OS sandbox. Registry/path checks retain filesystem race limitations.
+YARA and ClamAV remain unrequested, uninstalled/unverified by this profile; their status is visible
+as `not_checked`/`not_run`, never as verified. SQLite backups include sample identity metadata and
+persisted results but exclude managed sample bytes.
+
+Analysis results can be linked independently from sample identities. Case JSON, Markdown, and HTML
+reports include reviewed malware metadata and completeness, redact secrets, and omit sample bytes,
+source paths, managed keys, arbitrary printable strings, archive names, and raw worker output. Scan
+report formats and SARIF remain unchanged. No migration was needed: case links and malware records
+use the existing generic typed-record store; backup verification now validates sample/analysis/job
+relationships.
 
 ## Session and transport limits
 

@@ -26,6 +26,7 @@ from chinescan.core.models.investigation import (
     TimelineEntry,
 )
 from chinescan.core.storage.repository import Repository
+from chinescan.malware_analysis.managed import MalwareAnalysisRecord, MalwareSampleRecord
 
 SUPPORTED_CASE_RECORDS: dict[str, type[BaseModel]] = {
     "scan": Scan,
@@ -36,6 +37,8 @@ SUPPORTED_CASE_RECORDS: dict[str, type[BaseModel]] = {
     "indicator": Indicator,
     "target": Target,
     "authorization_record": AuthorizationRecord,
+    "malware_sample": MalwareSampleRecord,
+    "malware_analysis": MalwareAnalysisRecord,
 }
 CASE_STATUS_TRANSITIONS: dict[CaseStatus, set[CaseStatus]] = {
     CaseStatus.OPEN: {CaseStatus.IN_PROGRESS, CaseStatus.RESOLVED, CaseStatus.CLOSED},

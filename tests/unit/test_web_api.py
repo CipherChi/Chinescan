@@ -1,4 +1,7 @@
 import hashlib
+import os
+import shutil
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +13,7 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from chinescan.cli.app import app
+from chinescan.core.config.settings import Settings
 from chinescan.core.models.common import Severity
 from chinescan.core.models.finding import Finding
 from chinescan.core.models.investigation import Scan
@@ -127,6 +131,195 @@ def test_protected_reads_and_paginated_real_records(tmp_path):
     scan_detail = client.get("/api/scans/scan-1").json()
     assert "target_id" not in scan_detail
     assert scan_detail["finding_ids"] == ["finding-1", "finding-2"]
+
+
+def test_malware_api_fail_closed_and_redacted_case_linking(tmp_path, request):
+    root = Path(tempfile.mkdtemp(prefix="chinescan-b2-api-"))
+    request.addfinalizer(lambda: shutil.rmtree(root, ignore_errors=True))
+    source = root / "sources" / "benign-synthetic.bin"
+    source.parent.mkdir()
+    source.write_bytes(b"harmless synthetic sample")
+    registry = root / "operator" / "malware-samples.toml"
+    registry.parent.mkdir()
+    registry.write_text(
+        '[[samples]]\nid = "fixture"\nname = "<script>alert(1)</script>"\n'
+        f'path = "{source.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    credential = root / "private" / "operator.json"
+    create_operator(credential, "analyst", "safe local password")
+    database = root / "state" / "records.sqlite3"
+    settings = Settings(
+        _env_file=None,
+        database_path=database,
+        malware_managed_directory=root / "managed",
+    )
+    app = create_app(
+        database,
+        credential,
+        serve_frontend=False,
+        malware_registry_path=registry,
+        settings=settings,
+    )
+    repository = app.state.repository
+    sample = {
+        "sample_id": "managed-sample-1",
+        "registry_id": "fixture",
+        "display_name": "<script>alert(1)</script>",
+        "object_key": "b" * 64,
+        "size_bytes": 8,
+        "sha256": hashlib.sha256(b"12345678").hexdigest(),
+        "availability": "available",
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    analysis = {
+        "analysis_id": "analysis-1",
+        "sample_id": "managed-sample-1",
+        "profile": "builtin_static",
+        "status": "partial",
+        "created_at": datetime.now(UTC).isoformat(),
+        "result": {
+            "size_bytes": 8,
+            "hashes": {"sha256": hashlib.sha256(b"12345678").hexdigest()},
+            "file_type": "<img src=x>",
+            "printable_string_count": 1,
+            "indicator_count": 1,
+            "indicators": [{"kind": "url", "value": "https://example.invalid/<script>"}],
+            "warnings": ["ZIP metadata inspection skipped"],
+        },
+        "engines": {
+            "yara": {"installation": "not_checked"},
+            "clamav": {"installation": "not_checked"},
+        },
+    }
+    repository.save("malware_sample", sample["sample_id"], sample)
+    repository.save("malware_analysis", analysis["analysis_id"], analysis)
+    repository.save(
+        "malware_job",
+        "job-1",
+        {
+            "job_id": "job-1",
+            "sample_id": sample["sample_id"],
+            "status": "succeeded",
+            "created_at": datetime.now(UTC).isoformat(),
+            "started_at": None,
+            "finished_at": None,
+            "analysis_id": analysis["analysis_id"],
+            "warning": None,
+        },
+    )
+    repository.save(
+        "scan",
+        "scan-case",
+        Scan(
+            scan_id="scan-case",
+            target_id="target-case",
+            scanner="builtin",
+            started_at=datetime.now(UTC),
+        ).model_dump(mode="json"),
+    )
+    managed_root = app.state.malware_job_manager.manager.store.root
+    (managed_root / ("b" * 64)).write_bytes(b"12345678")
+    client = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000))
+    for path in (
+        "/api/malware/capability",
+        "/api/malware/samples",
+        "/api/malware/jobs",
+        "/api/malware/analyses/analysis-1",
+    ):
+        assert client.get(path).status_code == 401
+    assert (
+        client.post(
+            "/api/malware/jobs",
+            json={"registry_id": "fixture"},
+            headers={"Origin": "http://127.0.0.1"},
+        ).status_code
+        == 401
+    )
+    login = _login(client)
+    headers = {"Origin": "http://127.0.0.1", "X-CSRF-Token": login.json()["csrf_token"]}
+    with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as live:
+        login = _login(live)
+        headers["X-CSRF-Token"] = login.json()["csrf_token"]
+        entries = live.get("/api/malware/samples").json()
+        assert entries[0]["state"] == "managed"
+        assert entries[0]["sha256"] == hashlib.sha256(b"12345678").hexdigest()
+        assert "path" not in entries[0]
+        assert (
+            live.post(
+                "/api/malware/jobs",
+                json={"registry_id": "fixture", "path": str(source)},
+                headers=headers,
+            ).status_code
+            == 422
+        )
+        assert (
+            live.post(
+                "/api/malware/jobs",
+                json={"registry_id": "fixture"},
+                headers={"Origin": "http://127.0.0.1"},
+            ).status_code
+            == 403
+        )
+        assert (
+            live.post(
+                "/api/malware/jobs",
+                json={"registry_id": "fixture", "profile": "custom"},
+                headers=headers,
+            ).status_code
+            == 422
+        )
+        assert (
+            live.post(
+                "/api/malware/jobs",
+                json={"registry_id": "unknown"},
+                headers=headers,
+            ).status_code
+            == 422
+        )
+        capability = live.get("/api/malware/capability").json()
+        if os.name != "nt":
+            assert capability["execution_available"] is False
+            assert (
+                live.post(
+                    "/api/malware/jobs", json={"registry_id": "fixture"}, headers=headers
+                ).status_code
+                == 503
+            )
+        viewed = live.get("/api/malware/analyses/analysis-1")
+        assert viewed.status_code == 200
+        assert "internal-key-never-disclose" not in viewed.text
+        assert "https://example.invalid/<script>" in viewed.text
+        assert live.get("/api/malware/analyses/unknown").status_code == 404
+        assert live.get("/api/malware/samples/managed-sample-1/bytes").status_code == 404
+        case = live.post("/api/cases", json={"scan_id": "scan-case"}, headers=headers)
+        assert case.status_code == 201
+        case_id = case.json()["case"]["case_id"]
+        sample_link = live.post(
+            f"/api/cases/{case_id}/links",
+            json={"record_type": "malware_sample", "record_id": "managed-sample-1"},
+            headers=headers,
+        )
+        assert sample_link.status_code == 200
+        linked = live.post(
+            f"/api/cases/{case_id}/links",
+            json={"record_type": "malware_analysis", "record_id": "analysis-1"},
+            headers=headers,
+        )
+        assert linked.status_code == 200
+        duplicate = live.post(
+            f"/api/cases/{case_id}/links",
+            json={"record_type": "malware_analysis", "record_id": "analysis-1"},
+            headers=headers,
+        )
+        assert len(duplicate.json()["links"]) == len(linked.json()["links"])
+        report = live.get(f"/api/cases/{case_id}/report/json").text
+        assert "analysis-1" in report and "partial" in report
+        assert "internal-key-never-disclose" not in report
+        assert str(source) not in report
+        html_report = live.get(f"/api/cases/{case_id}/report/html").text
+        assert "&lt;script&gt;" in html_report
+        assert "<script>alert(1)</script>" not in html_report
 
 
 def test_authenticated_log_job_results_case_links_and_read_only_source(tmp_path, request):

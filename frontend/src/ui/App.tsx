@@ -4,8 +4,9 @@ import type { Finding, Overview, Page, Scan } from '../types';
 import { CasesWorkspace } from './CasesWorkspace';
 import { CodeJobsWorkspace } from './CodeJobsWorkspace';
 import { LogJobsWorkspace } from './LogJobsWorkspace';
+import { MalwareWorkspace } from './MalwareWorkspace';
 
-type Section = 'overview' | 'scans' | 'findings' | 'cases' | 'jobs' | 'logs';
+type Section = 'overview' | 'scans' | 'findings' | 'cases' | 'jobs' | 'logs' | 'malware';
 type Detail = { kind: 'scan'; id: string } | { kind: 'finding'; id: string } | null;
 
 function messageOf(error: unknown) {
@@ -87,14 +88,14 @@ export function App() {
   if (!ready) return <CenteredState title="Connecting to Chinetscan" detail="Checking your local session…" />;
   if (!username) return <Login error={error} busy={busy} onSubmit={submitLogin} onRetry={() => window.location.reload()} />;
 
-  const title = section === 'overview' ? 'Overview' : section === 'scans' ? 'Scan history' : section === 'findings' ? 'Findings' : section === 'cases' ? 'Cases' : section === 'jobs' ? 'Code assessments' : 'Log analysis';
+  const title = section === 'overview' ? 'Overview' : section === 'scans' ? 'Scan history' : section === 'findings' ? 'Findings' : section === 'cases' ? 'Cases' : section === 'jobs' ? 'Code assessments' : section === 'malware' ? 'Malware triage' : 'Log analysis';
   const nav = (id: Section, label: string, glyph: string) => <button className={`nav-link ${section === id ? 'active' : ''}`} key={id} onClick={() => { setSection(id); setPage(0); setFilter(''); setDetail(null); }}><span className="nav-glyph" aria-hidden="true">{glyph}</span>{label}{id === 'scans' && overview ? <span className="nav-count">{overview.scan_count}</span> : null}</button>;
 
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark" aria-hidden="true"><span>c</span><i /></div><div><strong>Chinetscan</strong><small>LOCAL ANALYST CONSOLE</small></div></div>
       <div className="nav-caption">WORKSPACE</div>
-      <nav aria-label="Main navigation">{nav('overview', 'Overview', '⌂')}{nav('jobs', 'Code assessments', '⌘')}{nav('logs', 'Log analysis', '≋')}{nav('scans', 'Scans', '⌕')}{nav('findings', 'Findings', '◈')}{nav('cases', 'Cases', '▤')}</nav>
+      <nav aria-label="Main navigation">{nav('overview', 'Overview', '⌂')}{nav('jobs', 'Code assessments', '⌘')}{nav('logs', 'Log analysis', '≋')}{nav('malware', 'Malware triage', '◇')}{nav('scans', 'Scans', '⌕')}{nav('findings', 'Findings', '◈')}{nav('cases', 'Cases', '▤')}</nav>
       <div className="sidebar-bottom"><div className="local-indicator"><span />LOCAL INSTANCE</div><p>Assessment data stays on this device.</p><div className="profile"><div className="avatar">{username.slice(0, 1).toUpperCase()}</div><div className="profile-name"><strong>{username}</strong><small>Local operator</small></div><button className="icon-button" onClick={logout} disabled={busy} aria-label="Sign out" title="Sign out">↗</button></div></div>
     </aside>
     <main className="main-content">
@@ -108,6 +109,7 @@ export function App() {
         {section === 'findings' && <FindingTable data={findingPage} page={page} onPage={setPage} onOpen={(id) => setDetail({ kind: 'finding', id })} />}
         {section === 'jobs' && <CodeJobsWorkspace onUnauthorized={signOut} onOpenScan={(id) => { setSection('scans'); setDetail({ kind: 'scan', id }); }} onCreateCase={(id) => { setCaseScanId(id); setSection('cases'); }} />}
         {section === 'logs' && <LogJobsWorkspace onUnauthorized={signOut} />}
+        {section === 'malware' && <MalwareWorkspace onUnauthorized={signOut} />}
         {section === 'cases' && <CasesWorkspace onUnauthorized={signOut} initialScanId={caseScanId}/>}
       </section>
     </main>

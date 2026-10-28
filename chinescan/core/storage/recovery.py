@@ -39,6 +39,11 @@ from chinescan.core.models.investigation import (
     TimelineEntry,
 )
 from chinescan.core.storage.sqlite import SQLiteRepository
+from chinescan.malware_analysis.managed import (
+    MalwareAnalysisRecord,
+    MalwareJobRecord,
+    MalwareSampleRecord,
+)
 
 BACKUP_FORMAT_VERSION = 1
 DATABASE_FILENAME = "database.sqlite3"
@@ -71,10 +76,10 @@ class MalwareMetadataRecord(BaseModel):
 
 RECORD_MODELS.update(
     {
-        "malware_sample": MalwareMetadataRecord,
-        "malware_job": MalwareMetadataRecord,
-        "malware_analysis": MalwareMetadataRecord,
+        "malware_job": MalwareJobRecord,
         "malware_audit": MalwareMetadataRecord,
+        "malware_sample": MalwareSampleRecord,
+        "malware_analysis": MalwareAnalysisRecord,
     }
 )
 RECORD_ID_FIELDS = {
@@ -316,9 +321,17 @@ def _application_issues(connection: sqlite3.Connection) -> tuple[str, ...]:
             relationships.append(("scan", record.scan_id))
         elif isinstance(record, Report):
             relationships.extend(("finding", item) for item in record.finding_ids)
+        elif isinstance(record, MalwareAnalysisRecord):
+            relationships.append(("malware_sample", record.sample_id))
+        elif isinstance(record, MalwareJobRecord):
+            relationships.append(("malware_sample", record.sample_id))
+            if record.analysis_id:
+                relationships.append(("malware_analysis", record.analysis_id))
     for record_type, record_id in relationships:
         if (record_type, record_id) not in payloads:
             issues.append("dangling_record_relationship")
+
+    for case in cases.values():
         note_ids = {note.note_id for note in case.notes}
         for activity in case.activities:
             details = activity.details

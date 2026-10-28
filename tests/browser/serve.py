@@ -15,6 +15,7 @@ from pathlib import Path
 import uvicorn
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from chinescan.core.config.settings import Settings
 from chinescan.core.models.common import Severity
 from chinescan.core.models.finding import Finding
 from chinescan.core.models.investigation import Event, Scan
@@ -124,6 +125,19 @@ def main() -> None:
         f'root = "{log_source.as_posix()}"\n',
         encoding="utf-8",
     )
+    sample_source_root = args.data_dir.parent / f"{args.data_dir.name}-approved-samples"
+    sample_source_root.mkdir()
+    benign_sample = sample_source_root / "benign-synthetic.bin"
+    benign_sample.write_bytes(b"Benign synthetic static triage fixture. No executable content.\n")
+    malware_registry = args.data_dir / "malware-samples.toml"
+    malware_registry.write_text(
+        "[[samples]]\n"
+        'id = "browser-benign"\n'
+        'name = "Benign synthetic sample"\n'
+        f'path = "{benign_sample.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    managed_root = args.data_dir.parent / f"{args.data_dir.name}-managed-malware"
     create_operator(credentials, operator_username, operator_password)
 
     repository = SQLiteRepository(database)
@@ -180,6 +194,12 @@ def main() -> None:
         serve_frontend=True,
         projects_path=projects_config,
         log_sources_path=log_sources_config,
+        malware_registry_path=malware_registry,
+        settings=Settings(
+            _env_file=None,
+            database_path=database,
+            malware_managed_directory=managed_root,
+        ),
     )
     served_application: ASGIApp = application
     if args.hold_scan_until_expiry:

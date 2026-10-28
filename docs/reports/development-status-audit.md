@@ -659,3 +659,52 @@ not authenticated chain of custody, no retention/deletion policy exists, and no 
 upload/download, case-link, or access-control routes were added. B2 still needs approval for
 authenticated result disclosure, web queue/shutdown and cancellation policy, retention, case linking,
 UI workflows, and any sample transfer through browser channels.
+
+## V. Stage B2 — authenticated malware dashboard and case integration — 2026-10-27
+
+This section supersedes the final B2-unimplemented status in Section U. B2 reuses the managed sample,
+job, fixed worker, persistence, and recovery services. `web serve --malware-samples-file` selects the
+operator registry. Authenticated APIs expose registry/managed/unavailable states, bounded reviewed
+sample metadata, paginated jobs and linked analysis completeness, and allowlisted persisted result
+fields. Requests accept registry IDs or managed sample IDs with the fixed `builtin_static` profile;
+paths, object keys, executable paths, scanner arguments, and environment variables are not accepted.
+Registry-only entries are explicitly un-ingested and have no verified hash.
+
+The existing authenticated session, CSRF, host/origin, loopback, and body limits protect the new
+routes. Results redact labels and failures, keep indicators inert, and omit paths, bytes, arbitrary
+printable strings, archive names, and raw worker output. Candidate indicators are not confirmed
+maliciousness. Case links distinguish stable sample identities from individual analyses, validate
+records, and are idempotent. JSON/Markdown/HTML case reports add reviewed malware metadata and
+completeness; scan reports and SARIF remain unchanged. No migration was required, and backup
+verification validates sample/analysis/job relationships. SQLite backups contain metadata/results,
+not managed sample bytes.
+
+An application-owned queue adapter uses the existing one-active/four-queued transactional limit.
+HTTP submissions return without waiting for analysis. The only executable path is the fixed child
+worker after Windows Job Object setup, assignment, and queried-limit verification. Other hosts retain
+historical views while disabling execution. Shutdown stops submissions, waits through the contained
+worker's bounded cleanup, marks this manager's unfinished work interrupted where possible, and
+restart reconciliation leaves work owned by another live manager alone. No user cancellation was
+added. Filesystem race limitations remain; Job Objects do not isolate file/network access and are not
+an OS sandbox. Browser upload, download, inline preview, sample deletion, retention, enrichment,
+optional scanner enablement, domain jobs, and public deployment remain outside scope.
+
+The real Windows browser acceptance run used a harmless synthetic registry sample and the actual
+built-in worker; it observed persisted job/result state and completeness, linked the analysis to a
+case, exported redacted JSON, refreshed to confirm persistence, and confirmed protected access after
+logout was denied. No YARA/ClamAV binaries or signature data were installed or enabled. The final
+verification table, including recovery publication failures, is in `docs/reports/phase-1-report.md`.
+
+Resume verification on 2026-10-27 confirms separate statuses: **B2 browser acceptance passed** (6/6,
+including the actual Windows worker, persisted results, case link, and redacted report export);
+**full Python acceptance is incomplete** (repeated `KeyboardInterrupt`, with no coverage threshold
+result); **backup publication reliability is unresolved**; and **release readiness is blocked**.
+The interrupt is a real SIGINT on the test process's main thread. It occurs at different test
+locations, including the SQLite backup progress callback, and no signal/control operation exists in
+the isolated malware test path. A background PowerShell run ended with `STATUS_CONTROL_C_EXIT`, but
+the specific host component sending the event is not identified. The latest standalone recovery
+suite passed 15/15, yet a B2 metadata/recovery test failed once at publication and passed alone; an
+earlier sequential recovery run raised WinError 5 at `os.rename(staging, output)` twice. A corrected
+500-run isolated B2-shaped backup probe did not reproduce the error. No retry, overwrite, or weakened
+verification was added. Exact diagnostics and the needed next evidence are recorded in
+`docs/reports/phase-1-report.md`.

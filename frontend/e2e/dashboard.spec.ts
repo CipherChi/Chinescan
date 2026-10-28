@@ -240,6 +240,56 @@ test('approved local log source produces persisted alerts, events, timeline, cas
   expect((await page.request.get(`${urls.standard?.url}/api/log/jobs`)).status()).toBe(401);
 });
 
+test('actual contained malware triage persists, links to a case, exports redacted metadata, and survives refresh', async ({ page }) => {
+  await signIn(page);
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: /^Cases/ }).click();
+  await page.getByLabel('Persisted scan ID').fill(scanId);
+  await page.getByLabel('Case title').fill('Benign malware workflow case');
+  await page.getByRole('button', { name: 'Create case' }).click();
+  await expect(page.getByText('Case created and saved.')).toBeVisible();
+
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: /^Malware triage/ }).click();
+  await expect(page.getByText('Static triage only. No sample execution. Process containment is not an OS sandbox.')).toBeVisible();
+  await page.getByLabel('Operator-registered sample').selectOption('registry:browser-benign');
+  await page.getByRole('button', { name: 'Start built-in static analysis' }).click();
+  const jobRow = page.locator('tbody tr').first();
+  await expect(jobRow).toContainText('succeeded', { timeout: 120_000 });
+  await expect(jobRow).toContainText(/complete|partial/);
+  await page.getByRole('button', { name: 'Review persisted analysis' }).click();
+  await expect(page.getByRole('region', { name: 'Analysis results' })).toBeVisible();
+  const analysisRegion = page.getByRole('region', { name: 'Analysis results' });
+  await expect(analysisRegion.getByText('SHA-256')).toBeVisible();
+  const analysisId = (await analysisRegion.locator('h3').innerText()).replace('Analysis ', '');
+
+  await page.getByLabel('Link analysis to case').selectOption({ index: 1 });
+  const linkResponse = page.waitForResponse((response) => response.url().includes('/api/cases/') && response.url().endsWith('/links') && response.status() === 200);
+  await page.getByRole('button', { name: 'Link analysis' }).click();
+  const linked = await linkResponse;
+  expect((await linked.json()).links.some((item: { record_id: string }) => item.record_id.startsWith(analysisId))).toBeTruthy();
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: /^Malware triage/ }).click();
+  await expect(page.locator('tbody tr').first()).toContainText('succeeded');
+  await page.getByRole('button', { name: 'Review persisted analysis' }).click();
+  await expect(page.getByRole('region', { name: 'Analysis results' })).toContainText('SHA-256');
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: /^Cases/ }).click();
+  await page.getByRole('button', { name: /Benign malware workflow case/ }).click();
+  await expect(page.getByRole('region', { name: 'Case detail' })).toContainText('malware_analysis');
+  const reportLink = page.getByRole('region', { name: 'Case detail' }).locator('.report-actions').first().getByRole('link', { name: 'JSON', exact: true });
+  const href = await reportLink.getAttribute('href');
+  const reportResponse = await page.request.get(`${urls.standard?.url}${href}`);
+  expect(reportResponse.status()).toBe(200);
+  const report = await reportResponse.text();
+  expect(report).toContain('malware_analysis');
+  expect(report).toContain('Benign malware workflow case');
+  expect(report).not.toContain('Benign synthetic static triage fixture. No executable content.');
+  expect(report).not.toContain('managed-malware');
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  const protectedStatus = await page.evaluate(async () => (await fetch('/api/malware/jobs')).status);
+  expect(protectedStatus).toBe(401);
+});
+
 test('finding detail shows fixture data as text and preserves keyboard navigation', async ({ page }) => {
   await signIn(page);
   await page.keyboard.press('Tab');

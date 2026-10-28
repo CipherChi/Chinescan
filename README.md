@@ -1,6 +1,10 @@
 # ChineScan
 
-ChineScan is a self-hosted local security assessment and investigation application. Its CLI supports local code assessment, exported-log analysis, static malware triage, explicitly authorized domain posture checks, investigations, reporting, and database recovery. An authenticated dashboard binds to loopback and supports persisted scan and case review plus approved-project code-assessment jobs. The dashboard is a local operator interface; this stage does not provide public deployment or claim production readiness.
+ChineScan is a self-hosted local security assessment and investigation application. Its CLI supports local code assessment, exported-log analysis, static malware triage, explicitly authorized domain posture checks, investigations, reporting, and database recovery. The authenticated loopback dashboard supports persisted scan/case review, code and log jobs, and operator-registered malware intake with contained static-analysis jobs, results, and case links. Malware execution, browser upload/download, external enrichment, and public deployment are not supported; process containment is not an OS sandbox.
+
+Stage B2 Windows browser acceptance passed. Full Python acceptance remains incomplete and backup
+publication reliability is unresolved; release verification is blocked. See
+[`docs/reports/phase-1-report.md`](docs/reports/phase-1-report.md) for the current diagnostic status.
 
 [![CI](https://github.com/CipherChi/Chinescan/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/CipherChi/Chinescan/actions/workflows/ci.yml)
 
@@ -93,13 +97,15 @@ The bundled server serves ordinary HTTP and therefore leaves the cookie `Secure`
 ordinary HTTP cannot use a Secure cookie. HTTPS termination is not configured or supported by
 this stage. Keep access local and do not put a public proxy in front of this service.
 
-Dashboard APIs expose persisted overview counts, scans, findings, cases, reports, and bounded
-code-assessment and log-analysis jobs. Log jobs select an operator-configured local source by ID,
-reuse bounded parsers and local detections, and expose persisted alert/event/timeline views with
-case links. Raw source lines and target filesystem paths are not sent to the browser. File browsing,
-domain checks, and malware intake are omitted. The log detection engine supports a constrained
-Sigma subset and is not comprehensive enterprise detection. Dashboard malware intake, domain jobs,
-cancellation, and a hard execution deadline are deferred.
+Dashboard APIs expose persisted overview counts, scans, findings, cases, reports, bounded
+code-assessment and log-analysis jobs, and malware registry/sample/job/analysis views. Malware
+analysis uses only the fixed built-in static profile through verified Windows Job Object
+containment. Results distinguish job completion from analysis completeness; YARA and ClamAV remain
+unavailable/unverified unless separately configured in another supported workflow. No sample bytes
+enter SQLite backups. Raw source lines and target filesystem paths are not sent to the browser. File
+browsing and domain jobs are omitted. The log detection engine supports a constrained Sigma subset
+and is not comprehensive enterprise detection. Dashboard user cancellation and public deployment
+are not supported.
 See [the local dashboard API contract](docs/API.md) for endpoint schemas and pagination rules.
 See [operator log-source configuration](docs/LOG-SOURCES.md) before enabling log jobs.
 
@@ -117,7 +123,7 @@ Generate JSON, Markdown, HTML, CSV, or SARIF 2.1.0 for a persisted scan with `ch
 
 Analyze local exported logs with `chinescan logs ./logs --rules ./sigma-rules --ioc-file ./iocs.txt`. JSON, JSONL, CSV, Linux auth/syslog, common nginx/Apache/IIS access logs, CEF, and LEEF are supported, along with gzip, ZIP, and tar archives. Windows and cloud data must be exported as JSON or CSV. Archives are read without extraction; raw log lines are not stored. Built-in detections and the supported Sigma subset produce candidate alerts that require analyst review.
 
-Run `chinescan malware analyze ./sample.bin` for bounded, non-executing local static triage. It calculates MD5, SHA-1, and SHA-256, identifies common file signatures, counts printable strings without displaying them, lists bounded ZIP member metadata without extraction, and extracts candidate network/email indicators. Indicator values are hidden unless `--include-indicators` is passed. YARA and ClamAV are opt-in through `--yara-rules` and `--clamav` and require locally installed tools. The command does not copy, retain, encrypt, or persist sample bytes; malware intake/storage, memory analysis, and dynamic detonation are not implemented.
+Run `chinescan malware analyze ./sample.bin` for ephemeral, bounded static triage. For persisted dashboard workflows, configure an operator TOML registry and explicit `CHINESCAN_MALWARE_MANAGED_DIRECTORY`, then start `chinescan web serve --malware-samples-file ...`. The dashboard accepts registry IDs only, stores a managed copy outside protected roots, and executes the built-in profile only through verified Windows Job Object containment. It exposes reviewed results and case reports but never sample bytes. See [Malware backend operations](docs/MALWARE-BACKEND.md) for configuration and guarantees. YARA and ClamAV remain unused by the dashboard profile.
 
 Assess one domain you own with `chinescan domain example.com --i-own-this-target --operator "Analyst"`. For delegated work, pass `--authorization-file authorization.json` containing the exact `target`, `granted_by`, timezone-aware `valid_from` and `valid_until` timestamps, and `profile` (`light` or `deep`). The command records authorization and the configured limits locally before network access. Set `--timeout` from 0.1 to 10 seconds, `--max-addresses` from one to five for deep scans, and `--request-interval` from zero to five seconds. The built-in light profile resolves the exact hostname and checks one public address; deep checks up to the configured public address cap. Each address receives one HTTPS `HEAD`; if HTTPS fails for all selected addresses, the probe makes one HTTP `HEAD` fallback per selected address. It does not follow redirects, read response bodies, scan ports, enumerate subdomains, or run vulnerability templates. JSON output is available with `--format json`.
 
@@ -135,6 +141,6 @@ For local backup/restore guidance, upgrade precautions, and current deployment l
 
 ## Safety boundary
 
-Only use Chinetscan against assets for which you have explicit authorization. Code, log, and static file analysis run locally; domain posture checks require explicit target authorization and contact only public addresses returned for that exact hostname. The dashboard starts only through an explicit command and binds to loopback. Malware sample intake/storage, execution, and sandboxing are not implemented. Findings, alerts, and extracted indicators are candidates for analyst validation. See [Responsible Use](docs/RESPONSIBLE_USE.md).
+Only use Chinetscan against assets for which you have explicit authorization. Code, log, and static file analysis run locally; domain posture checks require explicit target authorization and contact only public addresses returned for that exact hostname. The dashboard starts only through an explicit command and binds to loopback. Malware dashboard triage is static only; samples are never executed or uploaded, and Job Object process containment is not an OS sandbox. Findings, alerts, and extracted indicators are candidates for analyst validation. See [Responsible Use](docs/RESPONSIBLE_USE.md).
 
 The dashboard includes the existing persisted case workflow: create from a stored scan, link supported records, append notes, update case status using workflow transitions, view the timeline, and download redacted case and scan reports. It does not persist artifacts.

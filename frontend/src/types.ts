@@ -28,7 +28,7 @@ export type Overview = {
   findings_by_severity: Record<Severity, number>;
   recent_scans: Scan[];
 };
-export type CaseRecord = { record_type: string; record_id: string; source: string; title: string; severity: Severity | null };
+export type CaseRecord = { record_type: string; record_id: string; source: string; title: string; severity: Severity | null; sample_id?: string | null; completeness?: string | null };
 export type CaseNote = { note_id: string; body: string; created_at: string; author_label: string | null };
 export type CaseTimelineItem = { item_id: string; category: string; description: string; event_occurred_at: string | null; case_activity_at: string | null };
 export type CaseData = {
@@ -45,3 +45,7 @@ export type LogJob = { job_id: string; source_id: string; source_name: string; s
 export type LogEvent = { event_id: string; occurred_at: string; kind: string; summary: string; source: string; source_ip: string | null; destination_ip: string | null; user: string | null; host: string | null; process: string | null; url: string | null; event_outcome: string | null; mitre_attack_techniques: string[] };
 export type LogAlert = { alert_id: string; title: string; description: string; severity: Severity; confidence: string; rule_id: string; event_ids: string[]; indicator_ids: string[]; mitre_attack_techniques: string[] };
 export type LogTimeline = { entry_id: string; occurred_at: string; description: string; event_id: string | null; scan_id: string | null };
+export type MalwareSample = { registry_id: string | null; display_name: string; state: 'registered' | 'managed' | 'unavailable'; source_available: boolean; source_size_bytes: number | null; sample_id: string | null; sha256: string | null; managed_size_bytes: number | null; availability: string | null };
+export type MalwareJob = { job_id: string; sample_id: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'; created_at: string; started_at: string | null; finished_at: string | null; analysis_id: string | null; warning: string | null; analysis_status: 'complete' | 'partial' | null };
+export type MalwareAnalysis = { analysis_id: string; sample_id: string; profile: string; status: 'complete' | 'partial'; created_at: string; size_bytes: number; hashes: Record<string, string>; file_type: string; architecture: string | null; printable_string_count: number; indicator_count: number; indicators: Array<{ kind: string; value: string }>; warnings: string[]; engines: Record<string, Record<string, string | boolean>>; evidence_note: string };
+export type MalwareCapability = { execution_available: boolean; diagnostic: string; historical_views_available: boolean };

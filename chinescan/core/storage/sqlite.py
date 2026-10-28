@@ -189,6 +189,59 @@ class SQLiteRepository(Repository):
                 connection.rollback()
                 raise
 
+    def enqueue_malware_analysis(
+        self,
+        job_id: str,
+        job: dict[str, Any],
+        audit_id: str,
+        audit: dict[str, Any],
+        *,
+        active_limit: int = 5,
+    ) -> None:
+        """Atomically reserve an analysis slot for an already managed sample."""
+        with self.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                active = connection.execute(
+                    select(func.count())
+                    .select_from(records)
+                    .where(
+                        records.c.record_type == "malware_job",
+                        records.c.payload["status"].as_string().in_(("queued", "running")),
+                    )
+                ).scalar_one()
+                if int(active) >= active_limit:
+                    raise OverflowError("Malware queue is full.")
+                duplicate = connection.execute(
+                    select(func.count())
+                    .select_from(records)
+                    .where(
+                        records.c.record_type == "malware_job",
+                        records.c.payload["sample_id"].as_string() == job.get("sample_id"),
+                        records.c.payload["status"].as_string().in_(("queued", "running")),
+                    )
+                ).scalar_one()
+                if int(duplicate):
+                    raise RuntimeError("An analysis for this managed sample is already active.")
+                connection.execute(
+                    records.insert().values(
+                        record_type="malware_job",
+                        record_id=job_id,
+                        payload=json.loads(json.dumps(job)),
+                    )
+                )
+                connection.execute(
+                    records.insert().values(
+                        record_type="malware_audit",
+                        record_id=audit_id,
+                        payload=json.loads(json.dumps(audit)),
+                    )
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
     def claim_next_malware_job(self, started_at: str) -> dict[str, Any] | None:
         """Claim the oldest queued job only when no other manager has a running job."""
         with self.engine.connect() as connection:
@@ -290,6 +343,7 @@ class SQLiteRepository(Repository):
             "finding": {"severity", "title", "scanner", "category"},
             "case": {"created_at", "updated_at", "status", "severity", "title"},
             "log_job": {"created_at", "status", "source_id"},
+            "malware_job": {"created_at", "status", "sample_id"},
         }
         if sort_by not in allowed.get(record_type, set()):
             raise ValueError("record sort field is not allowed")
