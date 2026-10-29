@@ -10,6 +10,16 @@
       "title": "Confidence",
       "type": "string"
     },
+    "EvidenceKind": {
+      "enum": [
+        "confirmed_artifact",
+        "pattern_match",
+        "reference_only",
+        "context_only"
+      ],
+      "title": "EvidenceKind",
+      "type": "string"
+    },
     "FindingCategory": {
       "enum": [
         "SAST",
@@ -77,33 +87,6 @@
   },
   "additionalProperties": false,
   "properties": {
-    "schema_version": {
-      "default": "1.0",
-      "title": "Schema Version",
-      "type": "string"
-    },
-    "finding_id": {
-      "title": "Finding Id",
-      "type": "string"
-    },
-    "title": {
-      "title": "Title",
-      "type": "string"
-    },
-    "description": {
-      "default": "",
-      "title": "Description",
-      "type": "string"
-    },
-    "severity": {
-      "$ref": "#/$defs/Severity",
-      "default": "info"
-    },
-    "fingerprint": {
-      "minLength": 1,
-      "title": "Fingerprint",
-      "type": "string"
-    },
     "category": {
       "$ref": "#/$defs/FindingCategory",
       "default": "SAST"
@@ -112,14 +95,29 @@
       "$ref": "#/$defs/Confidence",
       "default": "POSSIBLE"
     },
-    "scanner": {
-      "default": "unknown",
-      "title": "Scanner",
+    "description": {
+      "default": "",
+      "title": "Description",
       "type": "string"
     },
-    "rule_id": {
-      "default": "unknown",
-      "title": "Rule Id",
+    "evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EvidenceKind"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "finding_id": {
+      "title": "Finding Id",
+      "type": "string"
+    },
+    "fingerprint": {
+      "minLength": 1,
+      "title": "Fingerprint",
       "type": "string"
     },
     "location": {
@@ -141,12 +139,35 @@
       "title": "References",
       "type": "array"
     },
+    "rule_id": {
+      "default": "unknown",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "scanner": {
+      "default": "unknown",
+      "title": "Scanner",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "severity": {
+      "$ref": "#/$defs/Severity",
+      "default": "info"
+    },
     "tags": {
       "items": {
         "type": "string"
       },
       "title": "Tags",
       "type": "array"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
     }
   },
   "required": [

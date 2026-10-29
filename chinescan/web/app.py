@@ -25,9 +25,17 @@ from chinescan.core.cases import (
 )
 from chinescan.core.config.settings import Settings
 from chinescan.core.logging.redaction import redact
-from chinescan.core.models.common import Confidence, FindingCategory, Severity
+from chinescan.core.models.common import Confidence, FindingCategory, ScanVerdict, Severity
 from chinescan.core.models.finding import Finding
-from chinescan.core.models.investigation import Alert, Case, CaseStatus, Event, Scan, TimelineEntry
+from chinescan.core.models.investigation import (
+    Alert,
+    Case,
+    CaseStatus,
+    CoverageReport,
+    Event,
+    Scan,
+    TimelineEntry,
+)
 from chinescan.core.reporting import ReportingError, render_case_report, render_report, scan_data
 from chinescan.core.storage.sqlite import SQLiteRepository
 from chinescan.malware_analysis.managed import (
@@ -69,14 +77,18 @@ class ScanSummaryResponse(BaseModel):
     scanner: str
     project_types: list[str]
     finding_count: int
+    verdict: ScanVerdict | None = None
+    coverage_gap_count: int = 0
 
 
 class ScanDetailResponse(ScanSummaryResponse):
     finding_ids: list[str]
+    coverage: CoverageReport | None = None
+    failures: dict[str, str] = Field(default_factory=dict)
 
 
 class FindingSummaryResponse(BaseModel):
-    """Reviewed, redacted finding fields safe for dashboard display."""
+    """Reviewed, redacted finding fields approved for dashboard display."""
 
     model_config = ConfigDict(extra="forbid")
     finding_id: str
@@ -226,6 +238,7 @@ class CodeJobResponse(BaseModel):
     finished_at: str | None
     scan_id: str | None
     error: str | None
+    warning: str | None = None
 
 
 class CodeJobPageResponse(BaseModel):
@@ -348,7 +361,12 @@ def create_app(
             else Path.home() / ".config" / "chinescan" / "projects.toml",
         ],
     )
-    jobs = CodeJobManager(repository, db_lock, registry)
+    jobs = CodeJobManager(
+        repository,
+        db_lock,
+        registry,
+        reports_dir=(settings or Settings(_env_file=None)).reports_dir,
+    )
     log_registry = LogSourceRegistry(
         log_sources_path,
         [
@@ -910,7 +928,12 @@ def create_app(
         if raw is None:
             raise HTTPException(status_code=404, detail="Scan not found.")
         scan = Scan.model_validate(raw)
-        return _scan_summary(scan) | {"finding_ids": scan.finding_ids}
+        failure_data = redact(scan.failures)
+        return _scan_summary(scan) | {
+            "finding_ids": scan.finding_ids,
+            "coverage": scan.coverage.model_dump(mode="json") if scan.coverage else None,
+            "failures": failure_data,
+        }
 
     @application.get("/api/findings", response_model=FindingPageResponse)
     def list_findings(
@@ -1138,7 +1161,7 @@ def create_app(
     @application.get("/api/scans/{scan_id}/report/{output_format}")
     def scan_report(
         scan_id: str,
-        output_format: Literal["json", "markdown", "html", "csv", "sarif"],
+        output_format: Literal["json", "markdown", "html", "csv", "sarif", "share-summary"],
         _session: Session = Depends(current_session),  # noqa: B008
     ) -> Response:  # noqa: B008
         try:
@@ -1249,6 +1272,8 @@ def _scan_summary(scan: Scan) -> dict[str, Any]:
         "scanner": scan.scanner,
         "project_types": scan.project_types,
         "finding_count": len(scan.finding_ids),
+        "verdict": scan.verdict,
+        "coverage_gap_count": len(scan.coverage.gaps) if scan.coverage else 0,
     }
 
 

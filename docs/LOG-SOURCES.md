@@ -44,7 +44,7 @@ filesystem change between validation and open; this is not an OS sandbox.
 
 Inspect `partial` jobs and scan diagnostics as incomplete. Parsing errors, unsupported content,
 archive exhaustion, event/file/byte limits, invalid IOC/rule inputs, or unsupported Sigma conditions
-must not be treated as clean results. Raw input lines are not persisted or returned to the browser;
+must not be treated as complete results. Raw input lines are not persisted or returned to the browser;
 normalized events can still contain sensitive evidence and remain in local SQLite. Protect the DB
 and backups using host controls. Windows POSIX mode bits do not establish ACL protections.
 

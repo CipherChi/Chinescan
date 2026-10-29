@@ -1,18 +1,22 @@
 """Render persisted scan findings in portable analyst-facing formats."""
 
 import csv
+import getpass
 import html
 import io
 import json
 import re
+from pathlib import Path
 from typing import Any
 
+from chinescan import __version__
 from chinescan.core.cases import CaseWorkflow
 from chinescan.core.logging.redaction import redact
 from chinescan.core.models.common import Severity
 from chinescan.core.models.finding import Finding
 from chinescan.core.models.investigation import Alert, Scan
 from chinescan.core.storage.repository import Repository
+from chinescan.core.verdict import VERDICT_CAVEAT
 from chinescan.malware_analysis.managed import safe_display_name
 
 
@@ -39,12 +43,21 @@ def scan_data(repository: Repository, scan_id: str) -> tuple[Scan, list[Finding]
 
 def render_report(scan: Scan, findings: list[Finding], output_format: str) -> str:
     """Render one scan using JSON, Markdown, HTML, CSV, or SARIF 2.1.0."""
-    if output_format not in {"json", "markdown", "html", "csv", "sarif"}:
-        raise ReportingError("Format must be json, markdown, html, csv, or sarif.")
+    if output_format not in {"json", "markdown", "html", "csv", "sarif", "share-summary"}:
+        raise ReportingError("Unsupported report format.")
     safe_findings = [redact(item.model_dump(mode="json")) for item in findings]
+    caveat = VERDICT_CAVEAT.get(scan.verdict) if scan.verdict is not None else None
+    if output_format == "share-summary":
+        return _share_summary(scan, findings, caveat)
     if output_format == "json":
         return json.dumps(
-            {"scan": redact(scan.model_dump(mode="json")), "findings": safe_findings},
+            {
+                "scan": redact(scan.model_dump(mode="json")),
+                "findings": safe_findings,
+                "verdict": scan.verdict.value if scan.verdict else None,
+                "caveat": caveat,
+                "coverage": scan.coverage.model_dump(mode="json") if scan.coverage else None,
+            },
             ensure_ascii=False,
             sort_keys=True,
             indent=2,
@@ -62,6 +75,7 @@ def render_report(scan: Scan, findings: list[Finding], output_format: str) -> st
             "location",
             "fingerprint",
             "description",
+            "evidence",
         ]
         writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
@@ -76,6 +90,24 @@ def render_report(scan: Scan, findings: list[Finding], output_format: str) -> st
     title = f"ChineScan report: {scan.scan_id}"
     if output_format == "markdown":
         lines = [f"# {title}", "", f"Status: `{scan.status}`", "", f"Findings: {len(findings)}", ""]
+        if scan.verdict is not None:
+            lines.extend(["## Verdict", "", f"**{scan.verdict.value}** — {caveat}", ""])
+        if scan.coverage is not None:
+            lines.extend(
+                [
+                    "## Coverage",
+                    "",
+                    "Examined: "
+                    + ", ".join(f"{k}: {v}" for k, v in scan.coverage.examined.items()),
+                    "",
+                ]
+            )
+            lines.extend(["Coverage gaps:", ""])
+            lines.extend(
+                [f"- {gap.code}: {gap.reason} (count: {gap.count})" for gap in scan.coverage.gaps]
+                or ["- None recorded."]
+            )
+            lines.append("")
         for item in safe_findings:
             lines.extend(
                 [
@@ -84,6 +116,7 @@ def render_report(scan: Scan, findings: list[Finding], output_format: str) -> st
                     f"- Severity: **{item['severity']}**",
                     f"- Category: `{item['category']}`",
                     f"- Confidence: `{item['confidence']}`",
+                    *([f"- Evidence: `{item['evidence']}`"] if item.get("evidence") else []),
                     f"- Rule: `{_markdown_code(str(item['rule_id']))}`",
                     f"- Location: `{_markdown_code(str(item.get('location') or 'unspecified'))}`",
                     "",
@@ -98,10 +131,38 @@ def render_report(scan: Scan, findings: list[Finding], output_format: str) -> st
             "<tr>"
             + "".join(
                 f"<td>{html.escape(str(item.get(key) or ''))}</td>"
-                for key in ("severity", "category", "title", "rule_id", "location", "description")
+                for key in (
+                    "severity",
+                    "category",
+                    "title",
+                    "rule_id",
+                    "location",
+                    "description",
+                    "evidence",
+                )
             )
             + "</tr>"
         )
+    coverage_html = ""
+    if scan.coverage is not None:
+        gaps = (
+            "".join(
+                f"<li>{html.escape(g.code)}: {html.escape(g.reason)} ({g.count})</li>"
+                for g in scan.coverage.gaps
+            )
+            or "<li>None recorded.</li>"
+        )
+        examined = ", ".join(f"{k}: {v}" for k, v in scan.coverage.examined.items())
+        coverage_html = f"<h2>Coverage</h2><p>{html.escape(examined)}</p><ul>{gaps}</ul>"
+    verdict_html = (
+        "<h2>Verdict</h2><p><strong>"
+        + html.escape(scan.verdict.value)
+        + "</strong> — "
+        + html.escape(caveat or "")
+        + "</p>"
+        if scan.verdict
+        else ""
+    )
     return (
         '<!doctype html><html lang="en"><meta charset="utf-8"><title>'
         + html.escape(title)
@@ -109,8 +170,14 @@ def render_report(scan: Scan, findings: list[Finding], output_format: str) -> st
         + html.escape(title)
         + "</h1><p>Findings: "
         + str(len(findings))
-        + "</p><table><thead><tr><th>Severity</th><th>Category</th>"
-        + "<th>Title</th><th>Rule</th><th>Location</th><th>Description</th></tr></thead><tbody>"
+        + "</p>"
+        + verdict_html
+        + coverage_html
+        + "<table><thead><tr><th>Severity</th><th>Category</th>"
+        + (
+            "<th>Title</th><th>Rule</th><th>Location</th><th>Description</th>"
+            "<th>Evidence</th></tr></thead><tbody>"
+        )
         + "".join(rows)
         + "</tbody></table></html>"
     )
@@ -467,7 +534,7 @@ def _case_html(payload: dict[str, Any]) -> str:
             + "</p></li>"
             for item in payload["records"].get("finding", [])
         )
-        or "<li>No findings linked.</li>"
+        or "<li>This case has no linked finding records.</li>"
     )
     alerts = (
         "".join(
@@ -561,6 +628,7 @@ def _sarif(findings: list[Finding]) -> str:
                 "confidence": finding.confidence.value,
                 "fingerprint": finding.fingerprint,
                 "scanner": finding.scanner,
+                **({"evidence": finding.evidence.value} if finding.evidence is not None else {}),
             },
         }
         if finding.location:
@@ -589,6 +657,87 @@ def _sarif(findings: list[Finding]) -> str:
         ],
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def _share_summary(scan: Scan, findings: list[Finding], caveat: str | None) -> str:
+    """Build a short allowlisted summary without descriptions, contents, or absolute paths."""
+    evidence_counts: dict[str, int] = {}
+    severity_counts: dict[str, int] = {}
+    for finding in findings:
+        evidence = finding.evidence.value if finding.evidence else "unspecified"
+        evidence_counts[evidence] = evidence_counts.get(evidence, 0) + 1
+        severity_counts[finding.severity.value] = severity_counts.get(finding.severity.value, 0) + 1
+    home = str(Path.home())
+    username = getpass.getuser()
+
+    def relative_location(value: str | None) -> str:
+        if not value:
+            return "<path>"
+        candidate = value.replace("\\", "/")
+        if candidate.startswith("/") or re.match(r"^[A-Za-z]:/", candidate):
+            return "<path>"
+        for private in (home, username):
+            if private:
+                candidate = re.sub(
+                    re.escape(private.replace("\\", "/")), "<path>", candidate, flags=re.I
+                )
+        candidate = re.sub(r"(?i)(?:[A-Z]:/|//)[^\s:]+", "<path>", candidate)
+        return str(redact(candidate))
+
+    def share_text(value: str) -> str:
+        cleaned = value.replace("\\", "/")
+        for private in (home, username):
+            if private:
+                cleaned = re.sub(
+                    re.escape(private.replace("\\", "/")), "<path>", cleaned, flags=re.I
+                )
+        cleaned = re.sub(r"(?i)(?:[A-Z]:/|//)[^\s:]+", "<path>", cleaned)
+        return str(redact(cleaned))
+
+    lines = [
+        f"# ChineScan share summary — {share_text(scan.scan_id)}",
+        "",
+        f"- Tool version: {__version__}",
+        f"- Verdict: {scan.verdict.value if scan.verdict else 'not recorded'}",
+        "- Caveat: "
+        + (caveat or "Matches are leads rather than proof; no matches do not prove safety."),
+        "- Evidence counts: "
+        + (", ".join(f"{k}: {v}" for k, v in sorted(evidence_counts.items())) or "none"),
+        "- Severity counts: "
+        + (", ".join(f"{k}: {v}" for k, v in sorted(severity_counts.items())) or "none"),
+        "- Coverage gaps: "
+        + (
+            ", ".join(f"{share_text(gap.reason)} ({gap.count})" for gap in scan.coverage.gaps)
+            if scan.coverage and scan.coverage.gaps
+            else "none recorded"
+        ),
+        "- Indicator files: "
+        + (
+            ", ".join(
+                f"{share_text(str(scan.scan_options.get(key, 'indicator file')))} (SHA-256 "
+                f"{scan.scan_options.get(key.replace('file_name', 'sha256'), 'unavailable')})"
+                for key in sorted(scan.scan_options)
+                if key.startswith("indicator_file_name_")
+            )
+            or "none recorded"
+        ),
+        "",
+        "## Leads",
+    ]
+    for finding in findings[:10]:
+        title = share_text(finding.title)
+        if any(
+            indicator_id in title
+            for indicator_id in (item for item in finding.tags if item.startswith("indicator:"))
+        ):
+            title = "Indicator reference"
+        lines.append(
+            f"- {title} — {finding.evidence.value if finding.evidence else 'unspecified'} — "
+            f"{relative_location(finding.location)}"
+        )
+    if not findings:
+        lines.append("- No leads recorded.")
+    return str(redact("\n".join(lines))) + "\n"
 
 
 def _markdown(value: str) -> str:

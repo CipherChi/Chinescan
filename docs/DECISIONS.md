@@ -8,6 +8,8 @@ Use Python 3.12+, with `uv.lock` as the exact transitive resolution. Typer suppl
 
 Configuration defaults to `~/.config/chinescan/config.toml`; SQLite defaults to `~/.local/share/chinescan/chinescan.sqlite3`. Explicit config paths and the `CHINESCAN_DATABASE_PATH` setting support local overrides. Config initialization never writes secret settings.
 
+Reports default to `~/.local/share/chinescan/reports`, configurable through `CHINESCAN_REPORTS_DIR`, TOML, or global `--reports-dir`. Only code scans auto-save reports. Evidence grade is separate from confidence; verdicts use the four values `leads_found`, `no_matches_with_gaps`, `no_matches_in_scope`, and `scan_failed`.
+
 ## ADR-003: Versioned generic records
 
 All canonical records inherit a shared `schema_version`. Code finding fingerprints derive from normalized target, category, rule ID, and location as described in `DEDUPLICATION.md`. SQLite stores JSON-compatible typed payloads behind a repository protocol.
@@ -39,3 +41,10 @@ Vitest, jsdom, and Testing Library cover components. `httpx2` supplies the TestC
 compatible with the resolved Starlette release. Every direct dependency is locked in `uv.lock` or
 `frontend/package-lock.json`. No CORS, TLS terminator, browser binaries, scanner, or job framework
 was added.
+
+## ADR-008: Offline project indicator scanning and report summaries
+
+The new code indicator scanner accepts caller-supplied local indicator files and scans local
+project files without network activity. This offline boundary applies to that scanner only; the
+existing authorized `domain_assessment/probe.py` performs bounded network posture checks. Only code
+scans auto-save JSON and Markdown reports. No external project was consulted or reused.

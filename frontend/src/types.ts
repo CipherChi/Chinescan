@@ -7,7 +7,11 @@ export type Scan = {
   scanner: string;
   project_types: string[];
   finding_count: number;
+  verdict?: 'leads_found' | 'no_matches_with_gaps' | 'no_matches_in_scope' | 'scan_failed' | null;
+  coverage_gap_count?: number;
   finding_ids?: string[];
+  coverage?: { examined: Record<string, number>; gaps: Array<{ code: string; reason: string; count: number }> } | null;
+  failures?: Record<string, string>;
 };
 export type Finding = {
   finding_id: string;
@@ -39,7 +43,7 @@ export type CaseData = {
 };
 export type CaseSummary = Pick<CaseData['case'], 'case_id' | 'title' | 'description' | 'status' | 'severity' | 'created_at' | 'updated_at'> & { note_count: number; linked_record_count: number };
 export type CodeProject = { project_id: string; display_name: string };
-export type CodeJob = { job_id: string; project_id: string; project_name: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'; created_at: string; started_at: string | null; finished_at: string | null; scan_id: string | null; error: string | null };
+export type CodeJob = { job_id: string; project_id: string; project_name: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'; created_at: string; started_at: string | null; finished_at: string | null; scan_id: string | null; error: string | null; warning?: string | null };
 export type LogSource = { source_id: string; display_name: string };
 export type LogJob = { job_id: string; source_id: string; source_name: string; status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'interrupted'; created_at: string; started_at: string | null; finished_at: string | null; scan_id: string | null; event_count: number; alert_count: number; error_count: number; error: string | null; diagnostics: string[] };
 export type LogEvent = { event_id: string; occurred_at: string; kind: string; summary: string; source: string; source_ip: string | null; destination_ip: string | null; user: string | null; host: string | null; process: string | null; url: string | null; event_outcome: string | null; mitre_attack_techniques: string[] };

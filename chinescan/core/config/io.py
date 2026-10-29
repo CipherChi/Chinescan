@@ -15,7 +15,11 @@ def init_config(path: Path | None = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         raise ConfigurationError(f"Configuration already exists: {target}")
-    defaults = {"database_path": str(Settings().database_path), "log_level": "INFO"}
+    defaults = {
+        "database_path": str(Settings().database_path),
+        "reports_dir": str(Settings().reports_dir),
+        "log_level": "INFO",
+    }
     try:
         with target.open("x", encoding="utf-8") as stream:
             stream.write(tomli_w.dumps(defaults))

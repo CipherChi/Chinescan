@@ -36,6 +36,20 @@ class Confidence(StrEnum):
     INFORMATIONAL = "INFORMATIONAL"
 
 
+class EvidenceKind(StrEnum):
+    CONFIRMED_ARTIFACT = "confirmed_artifact"
+    PATTERN_MATCH = "pattern_match"
+    REFERENCE_ONLY = "reference_only"
+    CONTEXT_ONLY = "context_only"
+
+
+class ScanVerdict(StrEnum):
+    LEADS_FOUND = "leads_found"
+    NO_MATCHES_WITH_GAPS = "no_matches_with_gaps"
+    NO_MATCHES_IN_SCOPE = "no_matches_in_scope"
+    SCAN_FAILED = "scan_failed"
+
+
 class SchemaRecord(BaseModel):
     """Base for versioned JSON-compatible records."""
 

@@ -29,6 +29,8 @@ describe('dashboard authentication and overview', () => {
 
     render(<App/>);
     expect(await screen.findByRole('heading', { name: 'Welcome back' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /create account|register|sign up/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /create account|register|sign up/i })).not.toBeInTheDocument();
     expect(screen.queryByText('STORED SCANS')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Operator name'), { target: { value: 'analyst' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'safe local password' } });
@@ -55,6 +57,6 @@ describe('dashboard authentication and overview', () => {
     render(<App/>);
     expect(await screen.findByText('No scans yet')).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('button', { name: /findings/i }));
-    expect(await screen.findByText('No findings to review')).toBeInTheDocument();
+    expect(await screen.findByText('No persisted finding records')).toBeInTheDocument();
   });
 });

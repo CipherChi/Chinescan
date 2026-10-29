@@ -37,6 +37,27 @@ def test_oversized_source_is_reported_as_scan_failure(tmp_path: Path) -> None:
         raise AssertionError("Oversized source was silently omitted from the scan.")
 
 
+def test_oversized_scan_persists_failed_verdict_and_coverage_gap(tmp_path: Path) -> None:
+    project = tmp_path / "large-project"
+    project.mkdir()
+    (project / "large.py").write_bytes(b"x" * 1_000_001)
+    repository = SQLiteRepository(tmp_path / "failed-scan.sqlite3")
+    try:
+        try:
+            CodeScanService([BuiltinRuleScanner()], repository).scan(project)
+        except ScannerError:
+            pass
+        else:
+            raise AssertionError("Oversized source did not preserve the existing abort behavior.")
+        records = repository.list_records("scan")
+        assert len(records) == 1
+        assert records[0]["status"] == "failed"
+        assert records[0]["verdict"] == "scan_failed"
+        assert records[0]["coverage"]["gaps"][0]["code"] == "file_size_limit"
+    finally:
+        repository.close()
+
+
 def test_builtin_scanner_does_not_return_secret_value() -> None:
     findings = BuiltinRuleScanner().scan(FIXTURES / "sample-python-project")
     assert {finding.rule_id for finding in findings} == {
@@ -118,13 +139,53 @@ def test_code_cli_json_summary(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("CHINESCAN_DATABASE_PATH", str(tmp_path / "cli.sqlite3"))
     result = CliRunner().invoke(
         app,
-        ["code", str(FIXTURES / "sample-node-project"), "--format", "json"],
+        [
+            "--reports-dir",
+            str(tmp_path / "custom-reports"),
+            "code",
+            str(FIXTURES / "sample-node-project"),
+            "--format",
+            "json",
+        ],
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["project_types"] == ["node"]
     assert payload["finding_count"] == 1
     assert payload["findings"][0]["rule_id"] == "DYNAMIC-EVAL"
+    assert len(list((tmp_path / "custom-reports").glob("*"))) == 2
+
+
+def test_code_cli_no_save_report_and_fail_on_gaps(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CHINESCAN_DATABASE_PATH", str(tmp_path / "no-save.sqlite3"))
+    reports = tmp_path / "auto-reports"
+    disabled = CliRunner().invoke(
+        app,
+        ["code", str(FIXTURES / "sample-node-project"), "--no-save-report", "--format", "json"],
+    )
+    assert disabled.exit_code == 0, disabled.output
+    assert not reports.exists()
+
+    target = tmp_path / "long-line-project"
+    target.mkdir()
+    (target / "main.py").write_text("x" * 10_001, encoding="utf-8")
+    monkeypatch.setenv("CHINESCAN_DATABASE_PATH", str(tmp_path / "gaps.sqlite3"))
+    failed = CliRunner().invoke(app, ["code", str(target), "--fail-on-gaps", "--no-save-report"])
+    assert failed.exit_code == 1
+    assert "--fail-on-gaps" in failed.stderr
+
+
+def test_code_cli_report_store_warning_keeps_exit_code(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CHINESCAN_DATABASE_PATH", str(tmp_path / "warning.sqlite3"))
+    blocker = tmp_path / "reports-file"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("CHINESCAN_REPORTS_DIR", str(blocker / "child"))
+    result = CliRunner().invoke(
+        app, ["code", str(FIXTURES / "sample-node-project"), "--format", "json"]
+    )
+    assert result.exit_code == 0
+    json.loads(result.stdout)
+    assert "Warning:" in result.stderr
 
 
 def test_code_cli_severity_threshold_is_configurable(tmp_path: Path, monkeypatch) -> None:

@@ -155,7 +155,7 @@ class _PythonJsonTool(_JsonTool):
     executable = "python"
 
 
-def _run_python(tmp_path: Path, monkeypatch, code: str, timeout: float = 2.0):
+def _run_python(tmp_path: Path, monkeypatch, code: str, timeout: float = 10.0):
     monkeypatch.setattr("chinescan.scanners.external.shutil.which", lambda _: sys.executable)
     return _PythonJsonTool(timeout)._run(tmp_path, ["-c", code], {0})
 

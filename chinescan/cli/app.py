@@ -17,9 +17,12 @@ def configure(
     database: Path | None = typer.Option(  # noqa: B008
         None, "--database", help="Local SQLite database path."
     ),
+    reports_dir: Path | None = typer.Option(  # noqa: B008
+        None, "--reports-dir", help="Local report directory."
+    ),
 ) -> None:
     """Choose local configuration inputs; explicit options override environment and file."""
-    commands.configure_settings(config, database)
+    commands.configure_settings(config, database, reports_dir)
 
 
 app.command("version")(commands.version)

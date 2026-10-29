@@ -45,3 +45,8 @@ def repository(tmp_path: Path) -> SQLiteRepository:
     repo = SQLiteRepository(tmp_path / "records.sqlite3")
     yield repo
     repo.close()
+
+
+@pytest.fixture(autouse=True)
+def isolated_reports_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHINESCAN_REPORTS_DIR", str(tmp_path / "auto-reports"))

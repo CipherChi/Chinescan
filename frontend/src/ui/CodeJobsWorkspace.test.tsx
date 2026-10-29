@@ -4,7 +4,7 @@ import { setCsrfToken } from '../api';
 import { CodeJobsWorkspace } from './CodeJobsWorkspace';
 
 const unauthorized = vi.fn();
-const job = { job_id: 'job-1', project_id: 'fixture', project_name: 'Fixture', status: 'succeeded' as const, created_at: '2026-10-26T10:00:00Z', started_at: '2026-10-26T10:00:01Z', finished_at: '2026-10-26T10:00:02Z', scan_id: 'scan-1', error: null };
+const job = { job_id: 'job-1', project_id: 'fixture', project_name: 'Fixture', status: 'succeeded' as const, created_at: '2026-10-26T10:00:00Z', started_at: '2026-10-26T10:00:01Z', finished_at: '2026-10-26T10:00:02Z', scan_id: 'scan-1', error: null, warning: 'Scan reports could not be saved.' };
 function response(body: unknown, status = 200) { return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })); }
 
 describe('code assessment workspace', () => {
@@ -28,6 +28,7 @@ describe('code assessment workspace', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/code/jobs', expect.objectContaining({ method: 'POST' })));
     fireEvent.click(await screen.findByRole('button', { name: 'Job details' }));
     expect(await screen.findByText('Job ID')).toBeInTheDocument();
+    expect(await screen.findAllByText('Scan reports could not be saved.')).toHaveLength(2);
     expect(fetchMock).toHaveBeenCalledWith('/api/code/jobs/job-1', expect.anything());
     fireEvent.click(await screen.findByRole('button', { name: /Open scan findings/ }));
     expect(openScan).toHaveBeenCalledWith('scan-1');

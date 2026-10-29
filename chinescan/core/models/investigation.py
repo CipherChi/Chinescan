@@ -4,9 +4,32 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
-from chinescan.core.models.common import Confidence, SchemaRecord, Severity
+from chinescan.core.models.common import Confidence, ScanVerdict, SchemaRecord, Severity
+
+
+class CoverageGap(SchemaRecord):
+    code: str
+    reason: str
+    count: int = 1
+    source: str = ""
+    example: str | None = None
+
+    @field_validator("example")
+    @classmethod
+    def example_is_project_relative(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.replace("\\", "/")
+        if normalized.startswith("/") or ":" in normalized or ".." in normalized.split("/"):
+            raise ValueError("coverage examples must be project-relative paths")
+        return value
+
+
+class CoverageReport(SchemaRecord):
+    examined: dict[str, int] = Field(default_factory=dict)
+    gaps: list[CoverageGap] = Field(default_factory=list)
 
 
 class Event(SchemaRecord):
@@ -154,6 +177,8 @@ class Scan(SchemaRecord):
     timeline_entry_ids: list[str] = Field(default_factory=list)
     failures: dict[str, str] = Field(default_factory=dict)
     scan_options: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    coverage: CoverageReport | None = None
+    verdict: ScanVerdict | None = None
 
 
 class Target(SchemaRecord):

@@ -67,3 +67,17 @@ def test_environment_only_settings_use_defaults_when_config_is_absent(
     settings = load_settings()
     assert settings.log_level == "INFO"
     assert settings.database_path != tmp_path / "missing.sqlite3"
+
+
+def test_reports_dir_environment_and_cli_overrides(config_path: Path, monkeypatch) -> None:
+    from chinescan.core.config.io import load_settings
+
+    config_path.write_text('reports_dir = "from-file"\n', encoding="utf-8")
+    monkeypatch.delenv("CHINESCAN_REPORTS_DIR", raising=False)
+    file_settings = load_settings(config_path)
+    monkeypatch.setenv("CHINESCAN_REPORTS_DIR", "from-environment")
+    env_settings = load_settings(config_path)
+    cli_settings = load_settings(config_path, cli_overrides={"reports_dir": Path("from-cli")})
+    assert env_settings.reports_dir == Path("from-environment")
+    assert cli_settings.reports_dir == Path("from-cli")
+    assert file_settings.reports_dir == Path("from-file")

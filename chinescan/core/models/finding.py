@@ -4,7 +4,13 @@ from uuid import uuid4
 
 from pydantic import Field, HttpUrl
 
-from chinescan.core.models.common import Confidence, FindingCategory, SchemaRecord, Severity
+from chinescan.core.models.common import (
+    Confidence,
+    EvidenceKind,
+    FindingCategory,
+    SchemaRecord,
+    Severity,
+)
 
 
 class Reference(SchemaRecord):
@@ -20,6 +26,8 @@ class Finding(SchemaRecord):
     fingerprint: str = Field(min_length=1)
     category: FindingCategory = FindingCategory.SAST
     confidence: Confidence = Confidence.POSSIBLE
+    # Evidence describes the evidence type and is independent of severity and confidence.
+    evidence: EvidenceKind | None = None
     scanner: str = "unknown"
     rule_id: str = "unknown"
     location: str | None = None

@@ -30,3 +30,9 @@ calculates hashes, identifies common signatures, counts but does not emit printa
 lists limited ZIP metadata without extraction, and extracts capped candidate IOCs. YARA and ClamAV are explicit local subprocess integrations;
 their output and runtime are bounded. Sample bytes and analysis records are not persisted. This
 does not implement sample intake/storage, a malware repository, memory analysis, or detonation.
+
+Finding evidence grade is independent of confidence. Scan verdicts use `leads_found`,
+`no_matches_with_gaps`, `no_matches_in_scope`, and `scan_failed`. Code scans auto-save JSON and
+Markdown reports under the configured reports directory. The new indicator scanner reads local
+indicator files and project files without network access; this constraint does not apply to the
+existing authorized `domain_assessment/probe.py`.

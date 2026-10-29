@@ -55,7 +55,7 @@ class ProbeSettings:
 
 
 class DomainProbe(Protocol):
-    """Injectable boundary for DNS and safe HTTP/TLS posture checks."""
+    """Injectable boundary for DNS and bounded HTTP/TLS posture checks."""
 
     name: str
 

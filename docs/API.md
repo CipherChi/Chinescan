@@ -57,7 +57,7 @@ uses existing limits: up to 10,000 files, 25 MB per file, 250 MB aggregate input
 1,000 archive members, 100 MB per archive, and 100,000 events. Archives are never extracted.
 The single worker allows one active job and four waiting jobs. Partial jobs retain available results
 but are explicitly marked `partial` and include an error count; they must not be interpreted as a
-clean analysis. Restart reconciliation marks unfinished jobs `interrupted`. There is no cancellation
+complete analysis. Restart reconciliation marks unfinished jobs `interrupted`. There is no cancellation
 or hard wall-clock deadline. The filesystem can change after validation, so this is not OS sandboxing.
 
 Log alerts are candidate detections. Built-in rules are limited heuristics. The Sigma evaluator

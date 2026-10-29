@@ -24,6 +24,7 @@ from chinescan.core.orchestration.code_scan import (
     FindingScanner,
     ScannerError,
 )
+from chinescan.core.report_store import ReportStoreError, save_scan_reports
 from chinescan.core.reporting import (
     ReportingError,
     render_case_report,
@@ -39,6 +40,7 @@ from chinescan.core.storage.recovery import (
 )
 from chinescan.core.storage.sqlite import SQLiteRepository
 from chinescan.core.trends import scan_history_trends
+from chinescan.core.verdict import VERDICT_CAVEAT
 from chinescan.domain_assessment.authorization import AuthorizationError, authorize_target
 from chinescan.domain_assessment.probe import NetworkDomainProbe, ProbeSettings
 from chinescan.domain_assessment.service import DomainAssessmentService
@@ -53,6 +55,7 @@ from chinescan.scanners.external import (
     SemgrepScanner,
     TrivyScanner,
 )
+from chinescan.scanners.indicators import IndicatorScanner
 from chinescan.web.app import create_app
 from chinescan.web.auth import CredentialError, create_operator
 
@@ -148,18 +151,24 @@ def web_serve(
 
 _cli_config_path: Path | None = None
 _cli_database_path: Path | None = None
+_cli_reports_dir: Path | None = None
 
 
-def configure_settings(config_path: Path | None, database_path: Path | None) -> None:
-    global _cli_config_path, _cli_database_path
+def configure_settings(
+    config_path: Path | None, database_path: Path | None, reports_dir: Path | None = None
+) -> None:
+    global _cli_config_path, _cli_database_path, _cli_reports_dir
     _cli_config_path = config_path
     _cli_database_path = database_path
+    _cli_reports_dir = reports_dir
 
 
 def _settings() -> Settings:
     options: dict[str, object] = {}
     if _cli_database_path is not None:
         options["database_path"] = _cli_database_path
+    if _cli_reports_dir is not None:
+        options["reports_dir"] = _cli_reports_dir
     try:
         return load_settings(_cli_config_path, cli_overrides=options)
     except ConfigurationError as exc:
@@ -220,6 +229,15 @@ def code_scan(
         "--allow-network-audits",
         help="Allow pip-audit/npm audit to send dependency metadata to advisory services.",
     ),  # noqa: B008
+    no_save_report: bool = typer.Option(
+        False, "--no-save-report", help="Disable report auto-save."
+    ),
+    fail_on_gaps: bool = typer.Option(
+        False, "--fail-on-gaps", help="Exit 1 when coverage gaps are recorded."
+    ),
+    indicator_files: list[Path] | None = typer.Option(  # noqa: B008
+        None, "--indicator-file", help="Local indicator file; repeat as needed."
+    ),  # noqa: B008
 ) -> None:
     """Assess a local code project with the selected local scanners."""
     if output_format not in {"human", "json"}:
@@ -228,7 +246,7 @@ def code_scan(
     if fail_on != "never" and fail_on not in severity_order:
         raise typer.BadParameter("--fail-on must be critical, high, medium, low, info, or never")
     selected = scanner_names or ["builtin"]
-    known = {"builtin", "semgrep", "gitleaks", "trivy", "pip-audit", "npm-audit"}
+    known = {"builtin", "semgrep", "gitleaks", "trivy", "pip-audit", "npm-audit", "indicators"}
     unknown = sorted(set(selected) - known)
     if unknown:
         raise typer.BadParameter(f"unknown scanner(s): {', '.join(unknown)}")
@@ -236,6 +254,8 @@ def code_scan(
         raise typer.BadParameter("scanner names must be unique")
     if "semgrep" in selected and (semgrep_rules is None or not semgrep_rules.is_file()):
         raise typer.BadParameter("--scanner semgrep requires a readable local --semgrep-rules file")
+    if "indicators" in selected and not indicator_files:
+        raise typer.BadParameter("--scanner indicators requires at least one --indicator-file")
     if {"pip-audit", "npm-audit"}.intersection(selected) and not allow_network_audits:
         typer.echo(
             "Error: pip-audit and npm-audit require explicit --allow-network-audits consent.",
@@ -257,9 +277,12 @@ def code_scan(
             scanners.append(TrivyScanner(timeout_seconds))
         elif name == "pip-audit":
             scanners.append(PipAuditScanner(timeout_seconds))
+        elif name == "indicators":
+            scanners.append(IndicatorScanner(indicator_files or []))
         else:
             scanners.append(NpmAuditScanner(timeout_seconds))
-    repository = SQLiteRepository(_settings().database_path)
+    settings = _settings()
+    repository = SQLiteRepository(settings.database_path)
     try:
         result = CodeScanService(scanners, repository).scan(target)
     except ScannerError as exc:
@@ -268,19 +291,47 @@ def code_scan(
     finally:
         repository.close()
 
+    saved_reports: list[Path] = []
+    if not no_save_report:
+        report_repository = SQLiteRepository(settings.database_path)
+        try:
+            saved_reports = save_scan_reports(
+                report_repository, result.scan_id, settings.reports_dir
+            )
+        except ReportStoreError as exc:
+            typer.echo(f"Warning: {exc}", err=True)
+        finally:
+            report_repository.close()
+
     summary = result.summary()
     if output_format == "json":
         typer.echo(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        for path in saved_reports:
+            typer.echo(f"Saved report: {path}", err=True)
     else:
         typer.echo(f"Scan {result.scan_id}: {len(result.findings)} candidate finding(s)")
         typer.echo(f"Target: {result.target}")
         typer.echo("Project types: " + (", ".join(result.project_types) or "unknown"))
+        if result.verdict:
+            typer.echo(f"Verdict: {result.verdict.value.replace('_', ' ').capitalize()}")
+            typer.echo(VERDICT_CAVEAT[result.verdict])
+        gaps = len(result.coverage.gaps) if result.coverage else 0
+        files = result.coverage.examined.get("files_scanned", 0) if result.coverage else 0
+        typer.echo(f"Coverage: {files} files examined; {gaps} coverage gap(s).")
+        typer.echo(
+            "Next: review leads and investigate coverage gaps in the authorized project scope."
+        )
+        for path in saved_reports:
+            typer.echo(f"Saved report: {path}")
         for severity in ("critical", "high", "medium", "low", "info"):
             count = sum(finding.severity.value == severity for finding in result.findings)
             if count:
                 typer.echo(f"{severity.upper()}: {count}")
     if result.failures:
         typer.echo("Scanner failures: " + ", ".join(sorted(result.failures)), err=True)
+        raise typer.Exit(code=1)
+    if fail_on_gaps and result.coverage and result.coverage.gaps:
+        typer.echo("Failing because coverage gaps were recorded (--fail-on-gaps).", err=True)
         raise typer.Exit(code=1)
     if fail_on != "never":
         threshold = severity_order[fail_on]
@@ -302,13 +353,13 @@ def not_implemented(phase: int, command: str) -> None:
     raise typer.Exit(code=2)
 
 
-report_formats = ("json", "markdown", "html", "csv", "sarif")
+report_formats = ("json", "markdown", "html", "csv", "sarif", "share-summary")
 
 
 def report(
     scan_id: str = typer.Argument(..., help="Persisted scan ID."),  # noqa: B008
     output_format: str = typer.Option(  # noqa: B008
-        "json", "--format", help="json, markdown, html, csv, or sarif."
+        "json", "--format", help="json, markdown, html, csv, sarif, or share-summary."
     ),  # noqa: B008
     output: Path | None = typer.Option(  # noqa: B008
         None, "--output", help="Write to this path instead of stdout."

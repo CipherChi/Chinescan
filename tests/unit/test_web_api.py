@@ -66,6 +66,34 @@ def _login(client: TestClient, username: str = "analyst", password: str = "safe 
     )
 
 
+def test_old_shape_scan_still_serializes_from_authenticated_api(tmp_path):
+    _app, client, _credential, database = _fixture(tmp_path)
+    repository = SQLiteRepository(database)
+    old_scan = repository.get("scan", "scan-1")
+    assert old_scan is not None
+    old_scan.pop("coverage", None)
+    old_scan.pop("verdict", None)
+    repository.save("scan", "scan-1", old_scan)
+    repository.close()
+    assert _login(client).status_code == 200
+    response = client.get("/api/scans/scan-1")
+    assert response.status_code == 200
+    assert response.json()["verdict"] is None
+    assert response.json()["coverage_gap_count"] == 0
+
+
+def test_dashboard_has_no_operator_registration_api(tmp_path):
+    _app, client, _credential, _database = _fixture(tmp_path)
+    session = _login(client)
+    assert session.status_code == 200
+    response = client.post(
+        "/api/auth/register",
+        json={"username": "new", "password": "x"},
+        headers={"Origin": "http://127.0.0.1", "X-CSRF-Token": session.json()["csrf_token"]},
+    )
+    assert response.status_code == 404
+
+
 def test_protected_reads_and_paginated_real_records(tmp_path):
     _app, client, _credential, _database = _fixture(tmp_path)
     for path in (

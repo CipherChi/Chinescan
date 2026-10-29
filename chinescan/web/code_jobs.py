@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from chinescan.core.orchestration.code_scan import BuiltinRuleScanner, CodeScanService
+from chinescan.core.report_store import ReportStoreError, save_scan_reports
 from chinescan.core.storage.sqlite import SQLiteRepository
 
 TERMINAL = {"succeeded", "failed", "interrupted"}
@@ -184,9 +185,11 @@ class CodeJobManager:
         registry: ProjectRegistry,
         *,
         queue_limit: int = 4,
+        reports_dir: Path | None = None,
     ) -> None:
         self.repository, self.lock, self.registry = repository, lock, registry
         self.queue_limit = queue_limit
+        self.reports_dir = reports_dir
         self._condition = threading.Condition()
         self._queue: deque[str] = deque()
         self._thread: threading.Thread | None = None
@@ -275,6 +278,14 @@ class CodeJobManager:
                 # Scan persistence must have completed before linking it to the job.
                 with self.lock:
                     persisted = self.repository.get("scan", result.scan_id)
+                    if persisted is not None and self.reports_dir is not None:
+                        try:
+                            paths = save_scan_reports(
+                                self.repository, result.scan_id, self.reports_dir
+                            )
+                            job["reports"] = [str(path) for path in paths]
+                        except ReportStoreError:
+                            job["warning"] = "Scan reports could not be saved."
                 if persisted is None:
                     raise RuntimeError("Scan result persistence did not complete.")
                 _transition(job, "succeeded")

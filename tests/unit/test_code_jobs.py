@@ -190,6 +190,68 @@ def test_queue_bound_and_restart_interruption(tmp_path: Path) -> None:
     repo.close()
 
 
+def test_completed_code_job_saves_reports(tmp_path: Path) -> None:
+    import threading
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("print('fixture')\n", encoding="utf-8")
+    config, _ = _registry(tmp_path, project)
+    repository = SQLiteRepository(tmp_path / "reports.sqlite3")
+    reports_dir = tmp_path / "reports"
+    manager = CodeJobManager(
+        repository,
+        threading.RLock(),
+        ProjectRegistry(config, []),
+        reports_dir=reports_dir,
+    )
+    manager.start()
+    submitted = manager.submit("fixture")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and manager.get(submitted["job_id"])["status"] in {
+        "queued",
+        "running",
+    }:
+        time.sleep(0.02)
+    completed = manager.get(submitted["job_id"])
+    assert completed["status"] == "succeeded"
+    assert len(list(reports_dir.glob("*.json"))) == 1
+    assert len(list(reports_dir.glob("*.md"))) == 1
+    manager.stop()
+    repository.close()
+
+
+def test_report_store_failure_warns_without_failing_completed_job(tmp_path: Path) -> None:
+    import threading
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("print('fixture')\n", encoding="utf-8")
+    config, _ = _registry(tmp_path, project)
+    repository = SQLiteRepository(tmp_path / "reports-error.sqlite3")
+    reports_file = tmp_path / "not-a-directory"
+    reports_file.write_text("fixture", encoding="utf-8")
+    manager = CodeJobManager(
+        repository,
+        threading.RLock(),
+        ProjectRegistry(config, []),
+        reports_dir=reports_file / "child",
+    )
+    manager.start()
+    submitted = manager.submit("fixture")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and manager.get(submitted["job_id"])["status"] in {
+        "queued",
+        "running",
+    }:
+        time.sleep(0.02)
+    completed = manager.get(submitted["job_id"])
+    assert completed["status"] == "succeeded"
+    assert completed["warning"] == "Scan reports could not be saved."
+    manager.stop()
+    repository.close()
+
+
 def test_scanner_and_persistence_failures_have_distinct_persisted_outcomes(
     tmp_path: Path, monkeypatch
 ) -> None:

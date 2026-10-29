@@ -21,7 +21,7 @@ Commands run after installing the authorized Python 3.12 runtime:
   ```
 - `py -3.12 --version` -> exit 0: `Python 3.12.10`.
 
-Python 3.12.10 is the required acceptance interpreter. An existing `.venv` was present and used Python 3.13.15. During `uv sync`, uv replaced `.venv` with a Python 3.12.10 environment; this was an unplanned local environment change. The `.venv312` environment contains the uv tool used to manage the project environment.
+Python 3.12.10 is the required acceptance interpreter. `uv` is installed at user level. The duplicate `.venv312` environment was removed on 2026-10-29; `.venv` is the only project environment. Acceptance commands use plain `uv`.
 
 ## Earlier Phase 0 environment observations
 

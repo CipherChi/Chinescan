@@ -1,146 +1,123 @@
 # ChineScan
 
-ChineScan is a self-hosted local security assessment and investigation application. Its CLI supports local code assessment, exported-log analysis, static malware triage, explicitly authorized domain posture checks, investigations, reporting, and database recovery. The authenticated loopback dashboard supports persisted scan/case review, code and log jobs, and operator-registered malware intake with contained static-analysis jobs, results, and case links. Malware execution, browser upload/download, external enrichment, and public deployment are not supported; process containment is not an OS sandbox.
+ChineScan is a local security assessment and investigation tool. It scans local code, analyzes exported logs and local malware samples, performs domain posture checks only with explicit authorization, and supports investigations and reports. Findings need analyst review; this tool does not establish that a system is safe.
 
-Stage B2 Windows browser acceptance passed. Full Python acceptance remains incomplete and backup
-publication reliability is unresolved; release verification is blocked. See
-[`docs/reports/phase-1-report.md`](docs/reports/phase-1-report.md) for the current diagnostic status.
+## What Chinescan does
 
-[![CI](https://github.com/CipherChi/Chinescan/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/CipherChi/Chinescan/actions/workflows/ci.yml)
+ChineScan helps operators collect and review leads from local assessment workflows. Code scanning reads source files without executing project code. The indicator scanner compares project files with indicator data supplied from local files and operates offline. Other capabilities include exported-log analysis, static malware triage, explicitly authorized domain posture checks, cases, reporting, and database backup and recovery.
 
-## Requirements
+## Workable features
 
-- Python 3.12 or newer
-- `uv` for environment and dependency management
-- Node.js 22.22+ and npm for frontend build and browser acceptance
-- Chromium installed by Playwright for browser acceptance
+- Code scanning with built-in heuristic rules and optional scanner integrations. The `indicators` scanner matches local project files against local indicator files.
+- Optional finding evidence grades: `confirmed_artifact`, `pattern_match`, `reference_only`, and `context_only`. Evidence grade is separate from confidence; existing findings may omit a grade.
+- Code-scan coverage accounting records examined files and coverage gaps. Verdicts are `leads_found`, `no_matches_with_gaps`, `no_matches_in_scope`, and `scan_failed`.
+- Code scans automatically save JSON and Markdown reports. Log, malware, and domain scans do not currently auto-save JSON or Markdown reports.
+- A local authenticated web dashboard provides sign-in only. There is no sign-up or registration flow.
 
-## Quick start
+## CLI quick start
+
+Install Python 3.12 or newer and [uv](https://docs.astral.sh/uv/), then install the project:
 
 ```powershell
-uv sync --locked --extra dev
+uv sync --extra dev
 uv run chinescan --help
-uv run chinescan version
-uv run chinescan code ./fixtures/sample-python-project
-uv run chinescan logs ./fixtures/sample-logs --rules ./fixtures/sample-logs --ioc-file ./fixtures/sample-iocs.txt --format json
-uv run chinescan malware analyze ./fixtures/sample-malware/synthetic-indicators.txt --format json
 ```
 
-The default code scanner runs built-in checks locally without executing project files. Optional
-Semgrep, Gitleaks, Trivy, pip-audit, and npm-audit adapters are available through the CLI subject
-to their local-tool, rules/data, and explicit network-consent requirements. Adapter unit tests use
-mocks; they do not verify behavior against real binaries. Five opt-in integration tests exercise
-Semgrep, Gitleaks, Trivy, YARA, and ClamAV and require the corresponding external binaries and, for
-some, local data. They are excluded from normal acceptance.
-
-Log analysis supports local JSON, JSONL, CSV, auth/syslog, common web access logs, CEF, LEEF, and
-bounded gzip/ZIP/tar archives. Static malware triage reads a bounded local file without execution
-or upload and does not retain sample bytes. Domain posture checks resolve only the explicitly
-authorized hostname and make bounded HTTPS/HTTP HEAD requests to its public addresses. They do not
-provide port scanning, subdomain enumeration, or vulnerability-template scanning. See
-[Responsible Use](docs/RESPONSIBLE_USE.md) for authorization boundaries.
-
-Cases support workflow status, typed links, append-only notes, timelines, and redacted case and scan
-reports. Local database commands provide backup creation, verification, restore to a new path,
-preview-only retention planning, and recovery drill guidance. Backups contain sensitive records and
-are unencrypted; store them using host-approved encrypted storage and access controls. Windows POSIX
-mode bits do not establish ACL protection. Retention planning never deletes files.
-
-## Local dashboard
-
-Install the Python dashboard dependencies through the lockfile with `uv sync --locked --extra dev`.
-Bootstrap the local operator once; the command prompts for a username and password and stores
-only an Argon2id hash under the user profile (never in a project directory):
+Initialize local configuration and inspect it:
 
 ```powershell
-uv run chinescan web bootstrap --username analyst
+uv run chinescan config init
+uv run chinescan config validate --path "$HOME/.config/chinescan/config.toml"
 ```
 
-Build the frontend and explicitly start the single-worker loopback service:
+Commands and their options are also available through `chinescan <command> --help`. Configuration initialization does not write secret values.
+
+## Code scan examples
+
+Run built-in rules against a local project. JSON and Markdown reports are saved automatically:
 
 ```powershell
-cd frontend
-npm ci --no-audit
-npm run build
-cd ..
+uv run chinescan code .
+```
+
+Add local indicator matching (see the next section), disable automatic report saving, or return a failure status when coverage gaps are recorded:
+
+```powershell
+uv run chinescan code . --scanner builtin --scanner indicators --indicator-file .\indicators.json
+uv run chinescan code . --no-save-report
+uv run chinescan code . --fail-on-gaps
+```
+
+`--fail-on-gaps` exits with status 1 when the scan records coverage gaps. Scanner failures also produce a nonzero exit. A verdict summarizes findings and coverage; it is not a safety determination.
+
+## Indicator scanning examples
+
+The `indicators` scanner requires one or more local files passed with `--indicator-file`. It reads supported JSON, CSV, or text IOC formats, plus supported STIX 2.1 bundle indicator entries and MISP event attributes. Support is limited to the formats and entry types implemented by the parser; unsupported entries may be reported as coverage gaps. Input files are not fetched from URLs, and the scanner does not resolve or contact indicator values. Indicator matching is strictly offline and accepts only local indicator files.
+
+```powershell
+uv run chinescan code . --scanner indicators --indicator-file .\indicators.json
+uv run chinescan code . --scanner indicators --indicator-file .\domains.txt --indicator-file .\hashes.csv
+```
+
+## Reports and share summaries
+
+Only code scans automatically save JSON and Markdown reports. The default directory is `~/.local/share/chinescan/reports`; set it with the global `--reports-dir` option or `CHINESCAN_REPORTS_DIR`. You can also set `reports_dir` in the local TOML configuration. Use `--no-save-report` to opt out for a code scan.
+
+Reports for persisted scans can be rendered as JSON, Markdown, HTML, CSV, SARIF, or `share-summary`:
+
+```powershell
+uv run chinescan report <scan-id> --format share-summary --output .\share-summary.md
+```
+
+A share summary contains the verdict and caveat, evidence and severity counts, coverage gaps, indicator-file names and hashes when recorded, and up to ten lead titles with evidence grades and locations. It omits finding descriptions and absolute paths, redacts sensitive values, and masks indicator IDs in lead titles. Review a generated summary before sharing; redaction is not a substitute for checking its contents.
+
+Log, malware, and domain scans do not currently auto-save JSON or Markdown reports. This does not prevent supported explicit report commands from rendering stored scan records.
+
+## Web dashboard sign-in
+
+Prepare local operator sign-in credentials with the CLI bootstrap command, then start the dashboard:
+
+```powershell
+uv run chinescan web bootstrap
 uv run chinescan web serve
 ```
 
-`--username` is a username argument; bootstrap prompts securely for the password. To exercise the
-browser suite, run `npm ci --no-audit`, `npx playwright install chromium`, `npm run build`, and
-`npm run test:e2e` from `frontend/`. The browser harness uses synthetic temporary records and
-credentials and cleans up its processes and data.
+The bootstrap command prompts for a username and password and stores local sign-in credentials outside the repository. The dashboard has sign-in only; it has no sign-up or registration flow. The server binds to `127.0.0.1` by default.
 
-Configure approved projects outside the browser in `~/.config/chinescan/projects.toml`:
+The dashboard shows recent scans, verdicts and coverage gaps, scan details, failures and warnings, and JSON/Markdown report downloads for code scans. Access to scans, cases, evidence, reports, and job controls requires authentication.
 
-```toml
-[[projects]]
-id = "service-a"
-name = "Service A"
-root = "C:/work/service-a"
+## Configuration
+
+Configuration can come from the local TOML file and `CHINESCAN_` environment variables. CLI settings take precedence where supported. The reports directory can be set with:
+
+```powershell
+$env:CHINESCAN_REPORTS_DIR = "$HOME/chinescan-reports"
+uv run chinescan --reports-dir "$HOME/chinescan-reports" code .
 ```
 
-The dashboard sends only the stable project ID. The server resolves and validates the root again
-when it accepts and begins a job. It runs built-in local checks only, with one active job and up
-to four queued jobs. See [project registry and dashboard operations](docs/PROJECTS.md).
+The default SQLite database and report locations are local user-data paths. Config initialization never writes secret values; logs redact secret-like values.
 
-The service binds to `127.0.0.1:8765`; it does not start with other CLI commands or Docker
-Compose. During development, start `uv run chinescan web serve` in one terminal and `npm run dev`
-from `frontend` in another. Vite binds to `127.0.0.1:5173` and proxies `/api` to the backend.
-The development browser and production app use same-origin API calls, without wildcard CORS.
+## Security and responsible use
 
-The dashboard requires the local operator for every sensitive read. It uses HttpOnly,
-SameSite=Strict cookies, CSRF validation for writes, login throttling, and loopback host/origin
-checks. Sessions exist only in process memory and expire after 30 minutes; logging out revokes a
-session, and restarting the app invalidates all sessions. Run exactly one application worker.
-The bundled server serves ordinary HTTP and therefore leaves the cookie `Secure` attribute off;
-ordinary HTTP cannot use a Secure cookie. HTTPS termination is not configured or supported by
-this stage. Keep access local and do not put a public proxy in front of this service.
+Use ChineScan only on assets and data you own or are explicitly authorized to assess. Code and indicator scans operate on local files; code scanning does not execute project code. The indicator scanner is offline. Domain posture checks perform network activity and require explicit target authorization. Optional package audit integrations can send dependency metadata to advisory services only when explicitly enabled with `--allow-network-audits`.
 
-Dashboard APIs expose persisted overview counts, scans, findings, cases, reports, bounded
-code-assessment and log-analysis jobs, and malware registry/sample/job/analysis views. Malware
-analysis uses only the fixed built-in static profile through verified Windows Job Object
-containment. Results distinguish job completion from analysis completeness; YARA and ClamAV remain
-unavailable/unverified unless separately configured in another supported workflow. No sample bytes
-enter SQLite backups. Raw source lines and target filesystem paths are not sent to the browser. File
-browsing and domain jobs are omitted. The log detection engine supports a constrained Sigma subset
-and is not comprehensive enterprise detection. Dashboard user cancellation and public deployment
-are not supported.
-See [the local dashboard API contract](docs/API.md) for endpoint schemas and pagination rules.
-See [operator log-source configuration](docs/LOG-SOURCES.md) before enabling log jobs.
+Malware analysis is static triage: samples are not executed or uploaded. It is not an OS sandbox. The dashboard is local and authenticated; do not expose it publicly. Matches are leads, not proof; no matches do not prove safety. Coverage gaps and scanner failures limit what a scan can say. ChineScan does not provide protection, threat removal, or complete detection coverage.
 
-The dashboard requires one application worker. Sessions are in memory and restart-invalidated;
-the backend listener is explicit and loopback-only, using plain HTTP. Do not put this service behind
-a public proxy. Jobs have a fixed queue, no cancellation or hard execution deadline, and graceful
-shutdown waits for active work. Project validation and scanning have a filesystem check-to-open
-race and do not provide OS sandbox isolation.
+## Development and tests
 
-Initialize a local configuration with `uv run chinescan config init`; provide `--path` to choose a location. Initialization writes no credentials. The SQLite database defaults to the platform user-data directory and can be overridden with `CHINESCAN_DATABASE_PATH`.
+Install development dependencies and run the local checks:
 
-The built-in code scanner is local and never executes project files. Select `--scanner semgrep`, `--scanner gitleaks`, or `--scanner trivy` to use an installed engine. Semgrep requires a local rules file through `--semgrep-rules`; Trivy uses cached data without database updates. `pip-audit` and `npm-audit` are available only with explicit `--allow-network-audits` consent because they send dependency metadata to advisory services.
+```powershell
+uv sync --extra dev
+uv run --locked --extra dev ruff check .
+uv run --locked --extra dev mypy --strict chinescan
+uv run --locked --extra dev pytest -q
+```
 
-Generate JSON, Markdown, HTML, CSV, or SARIF 2.1.0 for a persisted scan with `chinescan report SCAN_ID --format sarif --output report.sarif`. Use `chinescan case create --from-scan SCAN_ID`, `chinescan case show CASE_ID`, and `chinescan case update CASE_ID --status in_progress` to track investigation status. Compare two stored scans with `chinescan compare BASELINE_SCAN_ID CURRENT_SCAN_ID`.
+The frontend checks are run from `frontend/`:
 
-Analyze local exported logs with `chinescan logs ./logs --rules ./sigma-rules --ioc-file ./iocs.txt`. JSON, JSONL, CSV, Linux auth/syslog, common nginx/Apache/IIS access logs, CEF, and LEEF are supported, along with gzip, ZIP, and tar archives. Windows and cloud data must be exported as JSON or CSV. Archives are read without extraction; raw log lines are not stored. Built-in detections and the supported Sigma subset produce candidate alerts that require analyst review.
-
-Run `chinescan malware analyze ./sample.bin` for ephemeral, bounded static triage. For persisted dashboard workflows, configure an operator TOML registry and explicit `CHINESCAN_MALWARE_MANAGED_DIRECTORY`, then start `chinescan web serve --malware-samples-file ...`. The dashboard accepts registry IDs only, stores a managed copy outside protected roots, and executes the built-in profile only through verified Windows Job Object containment. It exposes reviewed results and case reports but never sample bytes. See [Malware backend operations](docs/MALWARE-BACKEND.md) for configuration and guarantees. YARA and ClamAV remain unused by the dashboard profile.
-
-Assess one domain you own with `chinescan domain example.com --i-own-this-target --operator "Analyst"`. For delegated work, pass `--authorization-file authorization.json` containing the exact `target`, `granted_by`, timezone-aware `valid_from` and `valid_until` timestamps, and `profile` (`light` or `deep`). The command records authorization and the configured limits locally before network access. Set `--timeout` from 0.1 to 10 seconds, `--max-addresses` from one to five for deep scans, and `--request-interval` from zero to five seconds. The built-in light profile resolves the exact hostname and checks one public address; deep checks up to the configured public address cap. Each address receives one HTTPS `HEAD`; if HTTPS fails for all selected addresses, the probe makes one HTTP `HEAD` fallback per selected address. It does not follow redirects, read response bodies, scan ports, enumerate subdomains, or run vulnerability templates. JSON output is available with `--format json`.
-
-For local backup/restore guidance, upgrade precautions, and current deployment limits, see [Operations and deployment](docs/DEPLOYMENT.md).
-
-## Guides
-
-- [Dashboard API](docs/API.md)
-- [Approved project operations](docs/PROJECTS.md)
-- [Operator log-source configuration](docs/LOG-SOURCES.md)
-- [Recovery runbook](docs/RECOVERY-RUNBOOK.md)
-- [Deployment and operations guide](docs/DEPLOYMENT.md)
-- [Development and verification guide](docs/DEVELOPMENT.md)
-- [Development status audit](docs/reports/development-status-audit.md)
-
-## Safety boundary
-
-Only use Chinetscan against assets for which you have explicit authorization. Code, log, and static file analysis run locally; domain posture checks require explicit target authorization and contact only public addresses returned for that exact hostname. The dashboard starts only through an explicit command and binds to loopback. Malware dashboard triage is static only; samples are never executed or uploaded, and Job Object process containment is not an OS sandbox. Findings, alerts, and extracted indicators are candidates for analyst validation. See [Responsible Use](docs/RESPONSIBLE_USE.md).
-
-The dashboard includes the existing persisted case workflow: create from a stored scan, link supported records, append notes, update case status using workflow transitions, view the timeline, and download redacted case and scan reports. It does not persist artifacts.
+```powershell
+npm ci
+npm run typecheck
+npm test -- --run
+```
