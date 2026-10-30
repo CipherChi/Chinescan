@@ -1,4 +1,4 @@
-import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample } from './types';
+import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogSourceRegistryStatus, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample } from './types';
 
 let csrfToken = '';
 export function setCsrfToken(token: string) { csrfToken = token; }
@@ -54,6 +54,7 @@ export const api = {
   malwareJob: (id: string) => request<MalwareJob>(`/api/malware/jobs/${encodeURIComponent(id)}`),
   malwareAnalysis: (id: string) => request<MalwareAnalysis>(`/api/malware/analyses/${encodeURIComponent(id)}`),
   logSources: () => request<LogSource[]>('/api/log/sources'),
+  logSourcesStatus: () => request<LogSourceRegistryStatus>('/api/log/sources/status'),
   logJobs: () => request<Page<LogJob>>('/api/log/jobs?limit=50&offset=0'),
   startLogJob: (source_id: string) => request<LogJob>('/api/log/jobs', { method: 'POST', body: JSON.stringify({ source_id }) }),
   logAlerts: (scan: string, offset = 0, severity = '') => { const query = new URLSearchParams({ limit: '20', offset: String(offset) }); if (severity) query.set('severity', severity); return request<Page<LogAlert>>(`/api/log/analyses/${encodeURIComponent(scan)}/alerts?${query}`); },

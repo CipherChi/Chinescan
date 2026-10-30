@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from chinescan.core.storage.sqlite import SQLiteRepository
 from chinescan.log_analysis.service import LogAnalysisService
@@ -18,6 +18,11 @@ from chinescan.log_analysis.service import LogAnalysisService
 
 class LogSourceError(ValueError):
     """A configured log source is unavailable or unsafe."""
+
+
+class LogSourceRegistryStatus(TypedDict):
+    status: Literal["ok", "missing", "unreadable", "invalid", "empty"]
+    reason: str
 
 
 def _linked(path: Path) -> bool:
@@ -71,18 +76,36 @@ class LogSourceRegistry:
         self.protected = [item.resolve(strict=False) for item in protected]
 
     def entries(self) -> list[dict[str, str]]:
+        entries, _status = self.inspect()
+        return entries
+
+    def status(self) -> LogSourceRegistryStatus:
+        """Return a path-free diagnostic for the current registry state."""
+        _entries, status = self.inspect()
+        return status
+
+    def inspect(self) -> tuple[list[dict[str, str]], LogSourceRegistryStatus]:
+        """Read entries and their state together so callers get a consistent snapshot."""
+        if self.config_path is None or _linked(self.config_path):
+            return [], {"status": "unreadable", "reason": "Registry file cannot be read safely."}
         try:
-            raw = self._read()
+            text = self.config_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return [], {"status": "missing", "reason": "Registry file not found."}
+        except (OSError, UnicodeError):
+            return [], {"status": "unreadable", "reason": "Registry file could not be read."}
+        try:
+            raw = tomllib.loads(text)
+            if set(raw) - {"sources", "protected_paths"} or not isinstance(
+                raw.get("sources"), list
+            ):
+                raise ValueError
             protected = [*self.protected, *self._configured_protected(raw)]
             result = []
             ids: set[str] = set()
-            for item in raw.get("sources", []):
+            for item in raw["sources"]:
                 if not isinstance(item, dict) or set(item) - {
-                    "id",
-                    "name",
-                    "root",
-                    "rules",
-                    "iocs",
+                    "id", "name", "root", "rules", "iocs"
                 }:
                     raise ValueError
                 source_id, name = item.get("id"), item.get("name")
@@ -105,12 +128,28 @@ class LogSourceRegistry:
                 try:
                     root = _path(item["root"], directory=True)
                     self._check(root, protected)
+                    for key in ("rules", "iocs"):
+                        if item.get(key):
+                            configured = _path(
+                                item[key], directory=None if key == "rules" else False
+                            )
+                            self._check(configured, protected)
                 except LogSourceError:
                     continue
                 result.append({"source_id": source_id, "display_name": name})
-            return result
-        except (OSError, ValueError, TypeError, KeyError):
-            return []
+        except (OSError, ValueError, TypeError, KeyError, tomllib.TOMLDecodeError):
+            return [], {
+                "status": "invalid",
+                "reason": "Registry TOML or source entries are invalid.",
+            }
+        if result:
+            return result, {"status": "ok", "reason": "Registry loaded successfully."}
+        if raw["sources"]:
+            return [], {
+                "status": "invalid",
+                "reason": "No configured sources are available or safe.",
+            }
+        return [], {"status": "empty", "reason": "Registry is valid but contains no sources."}
 
     def resolve(self, source_id: str) -> tuple[str, Path, Path | None, Path | None]:
         raw = self._read()
