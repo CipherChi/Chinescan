@@ -60,7 +60,7 @@ def test_registry_excludes_application_data_directory_automatically(tmp_path: Pa
     from chinescan.web.app import create_app
 
     credentials = tmp_path / "data" / "operator.json"
-    create_operator(credentials, "analyst", "long-test-password")
+    create_operator(credentials, "analyst@example.test", "long-test-password")
     app = create_app(
         tmp_path / "data" / "records.sqlite3",
         credentials,
@@ -109,7 +109,7 @@ def test_authenticated_job_persists_scan_and_rejects_duplicate(tmp_path: Path, m
     config, _ = _registry(tmp_path, fixture)
     database = tmp_path / "data" / "records.sqlite3"
     credential = tmp_path / "data" / "operator.json"
-    create_operator(credential, "analyst", "long-test-password")
+    create_operator(credential, "analyst@example.test", "long-test-password")
     app = create_app(database, credential, serve_frontend=False, projects_path=config)
     entered = threading.Event()
     release = threading.Event()
@@ -125,7 +125,7 @@ def test_authenticated_job_persists_scan_and_rejects_duplicate(tmp_path: Path, m
         assert client.get("/api/code/projects").status_code == 401
         session = client.post(
             "/api/auth/login",
-            json={"username": "analyst", "password": "long-test-password"},
+            json={"email": "analyst@example.test", "password": "long-test-password"},
             headers={"Origin": str(client.base_url).rstrip("/")},
         )
         csrf = session.json()["csrf_token"]

@@ -128,6 +128,8 @@ class Case(SchemaRecord):
     severity: Severity = Severity.MEDIUM
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    project_id: str | None = None
+    project_removed: bool = False
     scan_ids: list[str] = Field(default_factory=list)
     finding_ids: list[str] = Field(default_factory=list)
     links: list[CaseRecordLink] = Field(default_factory=list)
@@ -165,6 +167,8 @@ class TimelineEntry(SchemaRecord):
 
 class Scan(SchemaRecord):
     scan_id: str = Field(default_factory=lambda: str(uuid4()))
+    project_id: str | None = None
+    project_removed: bool = False
     target_id: str
     scanner: str
     started_at: datetime

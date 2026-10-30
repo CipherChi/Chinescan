@@ -2,18 +2,27 @@
 
 The API is served by `chinescan web serve` on loopback only. OpenAPI and interactive docs are
 disabled in this stage; response models are declared in `chinescan/web/app.py` and the stable
-JSON contract is summarized here. Every route except login requires the `chinescan_session`
-HttpOnly cookie. The cookie is opaque and maps to an in-memory session. Authenticated POSTs also
-require a same-origin `Origin` header and `X-CSRF-Token` returned by login/session. API responses
-use `Cache-Control: private, no-store`.
+JSON contract is summarized here. Public authentication routes are loopback and same-origin
+guarded. Protected routes require the `chinescan_session` HttpOnly cookie, which maps to an
+in-memory session. Authenticated POSTs also require `X-CSRF-Token` returned by login/session. API
+responses use `Cache-Control: private, no-store`.
 
 ## Authentication
 
 | Method and path | Access | Contract |
 | --- | --- | --- |
-| `POST /api/auth/login` | Public, loopback and same-origin guarded | JSON body `{ "username": string, "password": string }`; returns `{ "username": string, "csrf_token": string }` and sets an HttpOnly SameSite=Strict cookie. Failures are generic and rate limited. |
-| `GET /api/auth/session` | Authenticated | Returns the operator name and CSRF token. |
+| `POST /api/auth/signup` | Public, loopback and same-origin guarded | JSON body `{ "email": string, "password": string }`; email is trimmed and lowercased; password minimum is 12 characters. Creates the single local Argon2id operator only when no credential file exists, returns `{ "email": string, "csrf_token": string }`, and sets an HttpOnly SameSite=Strict cookie. Existing accounts return a generic 409 conflict. |
+| `POST /api/auth/login` | Public, loopback and same-origin guarded | JSON body `{ "email": string, "password": string }`; returns `{ "email": string, "csrf_token": string }` and sets an HttpOnly SameSite=Strict cookie. Failures are generic and rate limited. |
+| `POST /api/auth/forgot-password` | Public, loopback and same-origin guarded | JSON body `{ "email": string }`; returns the same generic 202 response whether or not the account exists. The UI directs the operator to the local `web reset-password` command, which displays the one-time token only in the local terminal. |
+| `POST /api/auth/reset-password` | Public, loopback and same-origin guarded | JSON body `{ "email": string, "token": string, "password": string }`; accepts only a matching, unexpired, single-use token. Password minimum is 12 characters. Success replaces the Argon2id hash and invalidates sessions. |
+| `GET /api/auth/session` | Authenticated | Returns the operator email and CSRF token. |
 | `POST /api/auth/logout` | Authenticated + CSRF | Revokes the active session and clears its cookie. |
+
+Reset tokens contain 256 bits of random entropy, are stored only as SHA-256 digests, expire after
+15 minutes, and are invalidated when used or replaced by another local reset request. Repeated CLI
+requests are rate limited to one per minute. Password reset invalidates sessions in the current
+process and changes the credential authorization epoch so sessions in other running processes are
+rejected on their next request. No SMTP service is used.
 
 ## Persisted records
 

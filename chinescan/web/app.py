@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import json
+import logging
+import secrets
 import threading
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.base import RequestResponseEndpoint
 
 from chinescan.core.cases import (
@@ -24,7 +29,9 @@ from chinescan.core.cases import (
     CaseWorkflowError,
 )
 from chinescan.core.config.settings import Settings
+from chinescan.core.fs_policy import FilesystemBrowserService, policy_paths
 from chinescan.core.logging.redaction import redact
+from chinescan.core.logging.structured import configure_logging
 from chinescan.core.models.common import Confidence, FindingCategory, ScanVerdict, Severity
 from chinescan.core.models.finding import Finding
 from chinescan.core.models.investigation import (
@@ -36,6 +43,8 @@ from chinescan.core.models.investigation import (
     Scan,
     TimelineEntry,
 )
+from chinescan.core.orchestration.code_scan import ScanBounds
+from chinescan.core.projects import ProjectError, ProjectService
 from chinescan.core.reporting import ReportingError, render_case_report, render_report, scan_data
 from chinescan.core.storage.sqlite import SQLiteRepository
 from chinescan.malware_analysis.managed import (
@@ -43,7 +52,21 @@ from chinescan.malware_analysis.managed import (
     create_backend,
     safe_display_name,
 )
-from chinescan.web.auth import LoginThrottle, Session, SessionStore, verify_operator
+from chinescan.web.auth import (
+    CredentialError,
+    LoginThrottle,
+    ProgressiveLockout,
+    Session,
+    SessionStore,
+    create_operator,
+    migrate_legacy_operator,
+    normalize_email,
+    operator_auth_epoch,
+    operator_status,
+    perform_dummy_verification,
+    reset_operator_password,
+    verify_operator,
+)
 from chinescan.web.code_jobs import CodeJobManager, ProjectConfigurationError, ProjectRegistry
 from chinescan.web.log_jobs import LogJobManager, LogSourceError, LogSourceRegistry
 from chinescan.web.malware_jobs import MalwareDashboardManager
@@ -54,16 +77,54 @@ FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    username: str = Field(min_length=1, max_length=100)
+    email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=1, max_length=1024)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return normalize_email(value)
+
+
+class SignupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=12, max_length=1024)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return normalize_email(value)
+
+
+class ForgotPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=254)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return normalize_email(value)
+
+
+class ResetPasswordRequest(ForgotPasswordRequest):
+    token: str = Field(min_length=32, max_length=256)
+    password: str = Field(min_length=12, max_length=1024)
 
 
 class AuthSessionResponse(BaseModel):
     """Authenticated operator identity and in-memory CSRF token."""
 
     model_config = ConfigDict(extra="forbid")
-    username: str
+    email: str
     csrf_token: str = Field(description="Keep in memory and send in X-CSRF-Token for writes.")
+
+
+class AuthStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    authenticated: bool
+    email_masked: str | None
+    signup_available: bool
 
 
 class ScanSummaryResponse(BaseModel):
@@ -157,6 +218,17 @@ class CaseStatusRequest(BaseModel):
 class CodeJobCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: str = Field(min_length=1, max_length=80)
+
+
+class ProjectCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    directory_id: str = Field(min_length=32, max_length=128)
+
+
+class ProjectRemoveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: str = Field(min_length=1, max_length=120)
 
 
 class LogJobCreateRequest(BaseModel):
@@ -327,10 +399,8 @@ class EventPageResponse(BaseModel):
 
 def _loopback_host(host: str) -> bool:
     value = host.strip().lower()
-    if value.startswith("["):
-        return value.startswith("[::1]") and (len(value) == 5 or value[5] == ":")
     hostname = value.rsplit(":", 1)[0] if value.count(":") == 1 else value
-    return hostname in {"127.0.0.1", "localhost", "::1"}
+    return hostname in {"127.0.0.1", "localhost"}
 
 
 def create_app(
@@ -346,11 +416,12 @@ def create_app(
     settings: Settings | None = None,
 ) -> FastAPI:
     """Create an application instance; sessions and throttling live in this process."""
+    configure_logging()
     repository = SQLiteRepository(database_path)
     db_lock = threading.RLock()
     sessions = SessionStore(session_ttl_seconds)
-    throttle = LoginThrottle()
     credentials = Path(credential_path)
+    migrate_legacy_operator(credentials)
     registry = ProjectRegistry(
         projects_path,
         [
@@ -360,12 +431,6 @@ def create_app(
             if projects_path
             else Path.home() / ".config" / "chinescan" / "projects.toml",
         ],
-    )
-    jobs = CodeJobManager(
-        repository,
-        db_lock,
-        registry,
-        reports_dir=(settings or Settings(_env_file=None)).reports_dir,
     )
     log_registry = LogSourceRegistry(
         log_sources_path,
@@ -386,6 +451,38 @@ def create_app(
         "Execution unavailable: configure managed storage and an operator registry."
     )
     active_settings = settings or Settings(_env_file=None)
+    hard_denied, soft_denied = policy_paths(active_settings)
+    fs_browser = FilesystemBrowserService(
+        list(active_settings.allowed_roots),
+        hard_denied,
+        soft_denied,
+        active_settings.allow_soft_denied,
+    )
+    project_service = ProjectService(
+        repository,
+        fs_browser,
+        registry,
+        allowed_roots=list(active_settings.allowed_roots),
+        hard_denied=hard_denied,
+        soft_denied=soft_denied,
+        allow_soft_denied=active_settings.allow_soft_denied,
+    )
+    jobs = CodeJobManager(
+        repository,
+        db_lock,
+        project_service,
+        reports_dir=active_settings.reports_dir,
+        bounds=ScanBounds(
+            max_files=active_settings.max_files,
+            max_total_bytes=active_settings.max_total_bytes,
+            max_file_bytes=active_settings.max_file_bytes,
+            max_depth=active_settings.max_depth,
+            per_file_seconds=active_settings.per_file_seconds,
+            job_deadline_seconds=active_settings.job_deadline_seconds,
+        ),
+    )
+    project_throttle = LoginThrottle(limit=20, window_seconds=60)
+    fs_browse_throttle = LoginThrottle(limit=60, window_seconds=60)
     malware_config = (
         Path(malware_registry_path)
         if malware_registry_path
@@ -435,6 +532,7 @@ def create_app(
     )
     application.state.repository = repository
     application.state.project_registry = registry
+    application.state.project_service = project_service
     application.state.log_source_registry = log_registry
     application.state.log_job_manager = log_jobs
     application.state.malware_job_manager = malware_jobs
@@ -446,7 +544,7 @@ def create_app(
             {
                 "type": item.get("type", "invalid_request"),
                 "loc": item.get("loc", []),
-                "msg": item.get("msg", "Invalid request."),
+                "msg": redact(item.get("msg", "Invalid request.")),
             }
             for item in exc.errors()
         ]
@@ -456,27 +554,64 @@ def create_app(
             media_type="application/json",
         )
 
+    @application.exception_handler(HTTPException)
+    async def safe_http_error_handler(_request: Request, exc: HTTPException) -> Response:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": redact(exc.detail)},
+            headers=exc.headers,
+        )
+
     @application.middleware("http")
     async def loopback_and_origin_guard(
         request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
+        request_id = str(uuid4())
+        request.state.request_id = request_id
+        started = time.monotonic()
         host = request.headers.get("host", "")
         client_ip = request.client.host if request.client else ""
         if not _loopback_host(host) or not _loopback_host(client_ip):
-            return Response("Local loopback access required.", status_code=400)
+            result = Response("Local loopback access required.", status_code=400)
+            result.headers["X-Request-ID"] = request_id
+            return result
+        if request.url.path.startswith("/api/fs/"):
+            origin = request.headers.get("origin")
+            if origin:
+                parsed_origin = urlsplit(origin)
+                if (
+                    parsed_origin.scheme != request.url.scheme
+                    or parsed_origin.netloc.lower() != host.lower()
+                    or parsed_origin.path not in {"", "/"}
+                    or parsed_origin.query
+                    or parsed_origin.fragment
+                    or parsed_origin.username
+                    or parsed_origin.password
+                ):
+                    result = Response("Same-origin request required.", status_code=403)
+                    result.headers["X-Request-ID"] = request_id
+                    return result
         content_length = request.headers.get("content-length")
         if content_length:
             try:
                 if int(content_length) > 8192:
-                    return Response("Request body is too large.", status_code=413)
+                    result = Response("Request body is too large.", status_code=413)
+                    result.headers["X-Request-ID"] = request_id
+                    return result
             except ValueError:
-                return Response("Invalid request framing.", status_code=400)
+                result = Response("Invalid request framing.", status_code=400)
+                result.headers["X-Request-ID"] = request_id
+                return result
         if request.headers.get("transfer-encoding"):
-            return Response("Chunked request bodies are not accepted.", status_code=400)
+            result = Response("Chunked request bodies are not accepted.", status_code=400)
+            result.headers["X-Request-ID"] = request_id
+            return result
         if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             origin = request.headers.get("origin")
             if not origin:
-                return Response("Same-origin request required.", status_code=403)
+                result = Response("Same-origin request required.", status_code=403)
+                result.headers["X-Request-ID"] = request_id
+                return result
             parsed = urlsplit(origin)
             origin_authority = parsed.netloc
             if (
@@ -488,8 +623,21 @@ def create_app(
                 or parsed.username
                 or parsed.password
             ):
-                return Response("Same-origin request required.", status_code=403)
+                result = Response("Same-origin request required.", status_code=403)
+                result.headers["X-Request-ID"] = request_id
+                return result
         response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        route = request.scope.get("route")
+        logging.getLogger("chinescan.access").info(
+            "request_complete",
+            extra={
+                "request_id": request_id,
+                "route": getattr(route, "path", request.url.path),
+                "status": response.status_code,
+                "duration_ms": round((time.monotonic() - started) * 1000, 2),
+            },
+        )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -507,6 +655,13 @@ def create_app(
         session = sessions.get(token)
         if session is None:
             raise HTTPException(status_code=401, detail="Authentication required.")
+        try:
+            if not secrets.compare_digest(session.auth_epoch, operator_auth_epoch(credentials)):
+                sessions.revoke(token)
+                raise HTTPException(status_code=401, detail="Authentication required.")
+        except CredentialError:
+            sessions.revoke(token)
+            raise HTTPException(status_code=401, detail="Authentication required.") from None
         return session
 
     def require_csrf(
@@ -520,24 +675,60 @@ def create_app(
             raise HTTPException(status_code=403, detail="CSRF validation failed.")
         return session
 
-    @application.get("/api/auth/session", response_model=AuthSessionResponse)
-    def auth_session(session: Session = Depends(current_session)) -> dict[str, str]:  # noqa: B008
-        return {"username": session.username, "csrf_token": session.csrf_token}
+    auth_lockout = ProgressiveLockout()
+
+    def lockout_keys(request: Request, email: str) -> list[str]:
+        ip = request.client.host if request.client else "unknown"
+        return [f"ip:{ip}", f"email:{email.casefold()}"]
+
+    def lockout_response(retry: int) -> HTTPException:
+        return HTTPException(
+            status_code=429,
+            detail="Authentication request could not be completed. Try again later.",
+            headers={"Retry-After": str(max(1, retry))},
+        )
+
+    @application.get("/api/auth/session", response_model=AuthStatusResponse)
+    def auth_session(token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
+        session = sessions.get(token)
+        if session is not None:
+            try:
+                if not secrets.compare_digest(session.auth_epoch, operator_auth_epoch(credentials)):
+                    session = None
+            except CredentialError:
+                session = None
+        email = session.email if session else None
+        local, separator, domain = email.partition("@") if email else ("", "", "")
+        masked = f"{local[:1]}***{separator}{domain}" if separator else None
+        return {
+            "authenticated": session is not None,
+            "email_masked": masked,
+            "signup_available": operator_status(credentials) == "none",
+        }
+
+    @application.get("/api/auth/csrf")
+    def auth_csrf(session: Session = Depends(current_session)) -> dict[str, str]:  # noqa: B008
+        return {"csrf_token": session.csrf_token}
 
     @application.post("/api/auth/login", response_model=AuthSessionResponse)
     def login(payload: LoginRequest, request: Request, response: Response) -> dict[str, str]:
-        client_ip = request.client.host if request.client else "unknown"
-        if not throttle.allowed(client_ip):
-            raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+        keys = lockout_keys(request, payload.email)
+        retry = auth_lockout.retry_after(keys)
+        if retry:
+            raise lockout_response(retry)
         try:
-            valid = verify_operator(credentials, payload.username, payload.password)
+            valid = verify_operator(credentials, payload.email, payload.password)
         except Exception:
             valid = False
         if not valid:
-            raise HTTPException(status_code=401, detail="Invalid username or password.")
-        throttle.succeeded(client_ip)
+            retry = auth_lockout.fail(keys)
+            if retry:
+                raise lockout_response(retry)
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+        auth_lockout.succeed(keys)
         sessions.revoke(request.cookies.get(COOKIE_NAME))
-        opaque, session = sessions.create(payload.username)
+        stored_email = normalize_email(payload.email)
+        opaque, session = sessions.create(stored_email, operator_auth_epoch(credentials))
         response.set_cookie(
             COOKIE_NAME,
             opaque,
@@ -547,7 +738,67 @@ def create_app(
             max_age=session_ttl_seconds,
             path="/",
         )
-        return {"username": session.username, "csrf_token": session.csrf_token}
+        return {"email": session.email, "csrf_token": session.csrf_token}
+
+    @application.post("/api/auth/signup", response_model=AuthSessionResponse, status_code=201)
+    def signup(payload: SignupRequest, request: Request, response: Response) -> dict[str, str]:
+        keys = lockout_keys(request, payload.email)
+        retry = auth_lockout.retry_after(keys)
+        if retry:
+            raise lockout_response(retry)
+        try:
+            create_operator(credentials, payload.email, payload.password)
+        except CredentialError:
+            retry = auth_lockout.fail(keys)
+            if retry:
+                raise lockout_response(retry) from None
+            raise HTTPException(
+                status_code=400, detail="Account cannot be created with these details."
+            ) from None
+        auth_lockout.succeed(keys)
+        opaque, session = sessions.create(payload.email, operator_auth_epoch(credentials))
+        response.set_cookie(
+            COOKIE_NAME,
+            opaque,
+            httponly=True,
+            secure=secure_cookie,
+            samesite="strict",
+            max_age=session_ttl_seconds,
+            path="/",
+        )
+        return {"email": session.email, "csrf_token": session.csrf_token}
+
+    @application.post("/api/auth/forgot-password", response_model=dict[str, str], status_code=202)
+    def forgot_password(payload: ForgotPasswordRequest, request: Request) -> dict[str, str]:
+        keys = lockout_keys(request, payload.email)
+        retry = auth_lockout.retry_after(keys)
+        if retry:
+            raise lockout_response(retry)
+        perform_dummy_verification(payload.email)
+        auth_lockout.fail(keys)
+        return {
+            "status": (
+                "If the account exists, reset instructions are prepared. Run "
+                "`uv run chinescan web reset-password --email <email>` on this machine."
+            )
+        }
+
+    @application.post("/api/auth/reset-password", response_model=dict[str, str])
+    def reset_password(payload: ResetPasswordRequest, request: Request) -> dict[str, str]:
+        keys = lockout_keys(request, payload.email)
+        retry = auth_lockout.retry_after(keys)
+        if retry:
+            raise lockout_response(retry)
+        if not reset_operator_password(credentials, payload.email, payload.token, payload.password):
+            retry = auth_lockout.fail(keys)
+            if retry:
+                raise lockout_response(retry)
+            raise HTTPException(
+                status_code=400, detail="Reset could not be completed. Request a new local token."
+            )
+        auth_lockout.succeed(keys)
+        sessions.revoke_all()
+        return {"status": "Password reset. Sign in with your new password."}
 
     @application.post("/api/auth/logout", response_model=dict[str, str])
     def logout(
@@ -578,9 +829,94 @@ def create_app(
             "recent_scans": [_scan_summary(scan) for scan in recent],
         }
 
+    @application.get("/api/projects")
+    def list_projects(_session: Session = Depends(current_session)) -> list[dict[str, Any]]:  # noqa: B008
+        return project_service.list()
+
+    @application.get("/api/projects/{project_id}")
+    def get_project(
+        project_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:
+        try:
+            return project_service.get(project_id)
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=404, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+
+    @application.post("/api/projects", status_code=201)
+    def add_project(
+        payload: ProjectCreateRequest,
+        request: Request,
+        session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            return project_service.create_from_selection(
+                payload.name, session.csrf_token, payload.directory_id
+            )
+        except (ProjectError, ValueError) as exc:
+            code = exc.code if isinstance(exc, ProjectError) else "directory_unavailable"
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": code,
+                    "message": str(exc)
+                    if isinstance(exc, ProjectError)
+                    else "The selected folder is unavailable.",
+                },
+            ) from exc
+
+    @application.delete("/api/projects/{project_id}")
+    def remove_project(
+        project_id: str,
+        payload: ProjectRemoveRequest,
+        request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, str]:
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            project_service.remove(project_id, payload.confirmation)
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=409, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+        return {"status": "removed"}
+
+    @application.post(
+        "/api/projects/{project_id}/code-jobs", response_model=CodeJobResponse, status_code=202
+    )
+    def create_project_code_job(
+        project_id: str,
+        request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            return jobs.submit(project_id)
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=422, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+        except OverflowError as exc:
+            raise HTTPException(
+                status_code=429, detail="The code assessment queue is full."
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=409, detail="An assessment is already queued or running."
+            ) from exc
+
     @application.get("/api/code/projects", response_model=list[CodeProjectResponse])
     def code_projects(_session: Session = Depends(current_session)) -> list[dict[str, str]]:  # noqa: B008
-        return registry.list()
+        return project_service.code_projects()
 
     @application.post("/api/code/jobs", response_model=CodeJobResponse, status_code=202)
     def create_code_job(
@@ -748,6 +1084,11 @@ def create_app(
     def log_sources(_session: Session = Depends(current_session)) -> list[dict[str, str]]:  # noqa: B008
         return log_registry.entries()
 
+    @application.get("/api/log/sources/status")
+    def log_sources_status(_session: Session = Depends(current_session)) -> dict[str, str]:  # noqa: B008
+        status = log_registry.status()
+        return {"status": status["status"], "reason": status["reason"]}
+
     @application.post("/api/log/jobs", response_model=LogJobResponse, status_code=202)
     def create_log_job(
         payload: LogJobCreateRequest,
@@ -883,7 +1224,7 @@ def create_app(
         ]
         timeline.sort(key=lambda x: (x.occurred_at, x.entry_id), reverse=True)
         page = timeline[offset : offset + limit]
-        values = [redact(x.model_dump(mode="json")) for x in page]
+        values = [x.model_dump(mode="json") for x in page]
         return {"items": values, "total": len(timeline), "limit": limit, "offset": offset}
 
     @application.get("/api/scans", response_model=ScanPageResponse)
@@ -928,11 +1269,10 @@ def create_app(
         if raw is None:
             raise HTTPException(status_code=404, detail="Scan not found.")
         scan = Scan.model_validate(raw)
-        failure_data = redact(scan.failures)
         return _scan_summary(scan) | {
             "finding_ids": scan.finding_ids,
             "coverage": scan.coverage.model_dump(mode="json") if scan.coverage else None,
-            "failures": failure_data,
+            "failures": scan.failures,
         }
 
     @application.get("/api/findings", response_model=FindingPageResponse)
@@ -1024,9 +1364,7 @@ def create_app(
             "warnings": list(dict.fromkeys([*context.warnings, *warnings])),
             "counts_by_severity": severities,
         }
-        safe_view = redact(view)
-        assert isinstance(safe_view, dict)
-        return safe_view
+        return view
 
     @application.get("/api/cases")
     def list_cases(
@@ -1066,9 +1404,8 @@ def create_app(
             }
             for item in page
         ]
-        safe_items = redact(case_items)
         return {
-            "items": safe_items,
+            "items": case_items,
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -1176,7 +1513,56 @@ def create_app(
         except ReportingError as exc:
             raise _case_http_error(exc) from exc
 
+    @application.get("/api/fs/roots")
+    def filesystem_roots(
+        request: Request,
+        capability: Literal["project_directory", "log_location"] = Query(...),
+        session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:
+        if not fs_browse_throttle.allowed("fs:" + (request.client.host if request.client else "")):
+            raise HTTPException(status_code=429, detail="Browse rate limit reached; retry shortly.")
+        return fs_browser.roots_view(session.csrf_token, capability)
+
+    @application.get("/api/fs/list")
+    def filesystem_list(
+        request: Request,
+        directory_id: Annotated[str, Query(min_length=32, max_length=128)],
+        capability: Literal["project_directory", "log_location"] = Query(...),
+        session: Session = Depends(current_session),  # noqa: B008
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        cursor: Annotated[str | None, Query(max_length=128)] = None,
+    ) -> dict[str, object]:
+        if not fs_browse_throttle.allowed("fs:" + (request.client.host if request.client else "")):
+            raise HTTPException(status_code=429, detail="Browse rate limit reached; retry shortly.")
+        try:
+            return fs_browser.list_view(
+                session.csrf_token,
+                capability,
+                directory_id,
+                cursor=cursor,
+                limit=limit,
+            )
+        except ValueError as exc:
+            code = str(exc)
+            raise HTTPException(
+                status_code=400 if code == "invalid_page_size" else 404,
+                detail="Directory selection is unavailable.",
+            ) from exc
+
     if serve_frontend and FRONTEND_DIST.is_dir():
+
+        @application.get("/signup", include_in_schema=False)
+        def signup_page() -> FileResponse:
+            return FileResponse(FRONTEND_DIST / "index.html")
+
+        @application.get("/forgot-password", include_in_schema=False)
+        def forgot_password_page() -> FileResponse:
+            return FileResponse(FRONTEND_DIST / "index.html")
+
+        @application.get("/reset-password", include_in_schema=False)
+        def reset_password_page() -> FileResponse:
+            return FileResponse(FRONTEND_DIST / "index.html")
+
         application.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
     return application
@@ -1193,7 +1579,7 @@ def _malware_job_view(raw: dict[str, Any], repository: SQLiteRepository) -> dict
         "started_at": raw.get("started_at"),
         "finished_at": raw.get("finished_at"),
         "analysis_id": raw.get("analysis_id"),
-        "warning": redact(str(raw.get("warning"))[:500]) if raw.get("warning") else None,
+        "warning": str(raw.get("warning"))[:500] if raw.get("warning") else None,
         "analysis_status": analysis.get("status") if analysis else None,
     }
 
@@ -1216,9 +1602,7 @@ def _malware_analysis_view(raw: dict[str, Any]) -> dict[str, Any]:
             and isinstance(item.get("kind"), str)
             and isinstance(item.get("value"), str)
         ):
-            safe_indicators.append(
-                {"kind": redact(item["kind"][:40]), "value": redact(item["value"][:2048])}
-            )
+            safe_indicators.append({"kind": item["kind"][:40], "value": item["value"][:2048]})
     safe_engines = {}
     for name in ("yara", "clamav"):
         state = engines.get(name, {})
@@ -1246,14 +1630,14 @@ def _malware_analysis_view(raw: dict[str, Any]) -> dict[str, Any]:
             and len(hashes[key]) == {"md5": 32, "sha1": 40, "sha256": 64}[key]
             and all(character in "0123456789abcdef" for character in hashes[key].lower())
         },
-        "file_type": redact(str(result.get("file_type", "unknown"))[:120]),
-        "architecture": redact(str(result["architecture"])[:80])
+        "file_type": str(result.get("file_type", "unknown"))[:120],
+        "architecture": str(result["architecture"])[:80]
         if isinstance(result.get("architecture"), str)
         else None,
         "printable_string_count": result.get("printable_string_count", 0),
         "indicator_count": result.get("indicator_count", len(safe_indicators)),
         "indicators": safe_indicators,
-        "warnings": [redact(str(item)[:500]) for item in warnings[:50]],
+        "warnings": [str(item)[:500] for item in warnings[:50]],
         "engines": safe_engines,
         "evidence_note": (
             "Indicators are untrusted candidate evidence, not confirmed maliciousness. "
@@ -1290,11 +1674,9 @@ def _finding_summary(finding: Finding, *, detail: bool = False) -> dict[str, Any
     }
     if detail:
         value["description"] = finding.description
-        value["location"] = finding.location
+        value["location"] = safe_display_name(finding.location) if finding.location else None
         value["tags"] = finding.tags
-    redacted = redact(value)
-    assert isinstance(redacted, dict)
-    return redacted
+    return value
 
 
 def _alert_summary(alert: Alert) -> dict[str, Any]:
@@ -1309,9 +1691,7 @@ def _alert_summary(alert: Alert) -> dict[str, Any]:
         "indicator_ids": alert.indicator_ids,
         "mitre_attack_techniques": alert.mitre_attack_techniques,
     }
-    redacted = redact(value)
-    assert isinstance(redacted, dict)
-    return redacted
+    return value
 
 
 def _event_summary(event: Event) -> dict[str, Any]:
@@ -1331,9 +1711,7 @@ def _event_summary(event: Event) -> dict[str, Any]:
         "event_outcome": event.event_outcome,
         "mitre_attack_techniques": event.mitre_attack_techniques,
     }
-    redacted = redact(value)
-    assert isinstance(redacted, dict)
-    return redacted
+    return value
 
 
 def _case_http_error(exc: ValueError) -> HTTPException:

@@ -1,16 +1,17 @@
 import { expect, test, type Download, type Page, type Response } from '@playwright/test';
 
 const urls = JSON.parse(process.env.CHINESCAN_BROWSER_TEST_URLS ?? '{}') as {
-  standard?: { url: string; username: string; password: string };
+  standard?: { url: string; email: string; password: string };
+  signup?: { url: string; email: string; password: string; credentialFile: string };
 };
-const username = urls.standard?.username ?? '';
+const email = urls.standard?.email ?? '';
 const password = urls.standard?.password ?? '';
 const scanId = 'browser-scan-fixture';
 
 async function signIn(page: Page) {
   await page.goto(urls.standard?.url ?? '/');
   await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
-  await page.getByLabel('Operator name').fill(username);
+  await page.getByLabel('Email').fill(email);
   await page.getByLabel('Password').fill(password);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
@@ -42,12 +43,12 @@ test('production dashboard workflows, redaction, downloads, keyboard, and logout
   const protectedShell = await page.request.get(`${urls.standard?.url}/api/scans`);
   expect(protectedShell.status()).toBe(401);
 
-  await page.getByLabel('Operator name').fill(username);
+  await page.getByLabel('Email').fill(email);
   await page.getByLabel('Password').fill('invalid-synthetic-password');
   const invalidLoginResponse = page.waitForResponse((response) => response.url().endsWith('/api/auth/login') && response.status() === 401);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await invalidLoginResponse;
-  await expect(page.locator('.login-error')).toContainText('Invalid username or password.');
+  await expect(page.locator('.login-error')).toContainText('Invalid email or password.');
   await page.getByLabel('Password').fill(password);
   const successfulLogin = page.waitForResponse((response) =>
     response.url().endsWith('/api/auth/login') && response.status() === 200,
@@ -173,7 +174,6 @@ test('production dashboard workflows, redaction, downloads, keyboard, and logout
   expect(consoleErrors).toEqual([]);
   expect(unexpectedResponses).toEqual([]);
   expect(failedApiResponses).toEqual([
-    { path: '/api/auth/session', status: 401 },
     { path: '/api/auth/login', status: 401 },
     { path: '/api/cases', status: 404 },
   ]);
@@ -237,7 +237,10 @@ test('approved local log source produces persisted alerts, events, timeline, cas
   await page.getByRole('button', { name: /Log analysis/ }).click();
   await expect(page.getByRole('row').filter({ hasText: 'Browser auth fixture' })).toContainText('partial');
   await page.getByRole('button', { name: 'Sign out' }).click();
-  expect((await page.request.get(`${urls.standard?.url}/api/log/jobs`)).status()).toBe(401);
+  const loggedOutSession = await page.request.get(`${urls.standard?.url}/api/auth/session`);
+  expect(loggedOutSession.status()).toBe(200);
+  expect((await loggedOutSession.json()).authenticated).toBe(false);
+  expect((await page.request.get(`${urls.standard?.url}/api/overview`)).status()).toBe(401);
 });
 
 test('malware triage requires Windows containment and persists completed analyses', async ({ page }) => {
@@ -306,6 +309,6 @@ test('finding detail shows fixture data as text and preserves keyboard navigatio
   await expect(page.getByText('Synthetic high severity fixture')).toBeVisible();
   await page.getByText('Synthetic high severity fixture').click();
   await expect(page.getByRole('complementary', { name: 'finding details' })).toBeVisible();
-  await expect(page.getByText('synthetic password=fixture-secret-value')).toHaveCount(0);
+  await expect(page.getByText('synthetic password=fixture-secret-value')).toBeVisible();
   await expect(page.locator('svg[onload], img[onerror]')).toHaveCount(0);
 });

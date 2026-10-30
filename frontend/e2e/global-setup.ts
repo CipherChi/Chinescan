@@ -12,9 +12,11 @@ const children: ChildProcess[] = [];
 let dataRoot = '';
 const DIAGNOSTIC_LIMIT = 4_000;
 const STARTUP_TIMEOUT_MS = 120_000;
+const READINESS_TIMEOUT_MS = 45_000;
+const READINESS_REQUEST_TIMEOUT_MS = 5_000;
 
 interface TestCredentials {
-  username: string;
+  email: string;
   password: string;
 }
 
@@ -44,7 +46,7 @@ async function stopOwned(child: ChildProcess): Promise<void> {
 
 function makeCredentials(): TestCredentials {
   return {
-    username: `browser-${randomBytes(4).toString('hex')}`,
+    email: `browser-${randomBytes(4).toString('hex')}@example.test`,
     password: randomBytes(24).toString('base64url'),
   };
 }
@@ -53,25 +55,23 @@ async function start(
   ttl: number,
   credentials: TestCredentials,
   holdScanUntilExpiry = false,
-): Promise<{ url: string; username: string; password: string }> {
-  const directory = resolve(dataRoot, `ttl-${ttl}`);
-  const python = process.env.CHINESCAN_PYTHON ?? (process.platform === 'win32' ? 'py' : 'python3.12');
-  const pythonArgs = process.env.CHINESCAN_PYTHON
-    ? []
-    : process.platform === 'win32' ? ['-3.12'] : [];
-  const args = [...pythonArgs, pythonHarness, '--data-dir', directory, '--ttl', String(ttl)];
+  emptyAccount = false,
+  projectsEnabled = false,
+): Promise<{ url: string; email: string; password: string; credentialFile: string }> {
+  const directory = resolve(dataRoot, `instance-${children.length}-ttl-${ttl}`);
+  const python = 'uv';
+  const args = ['run', 'python', pythonHarness, '--data-dir', directory, '--ttl', String(ttl)];
   if (holdScanUntilExpiry) args.push('--hold-scan-until-expiry');
+  if (emptyAccount) args.push('--empty-account');
+  if (projectsEnabled) args.push('--projects-enabled');
   const child = spawn(python, args, {
     cwd: repoRoot,
     env: {
       ...process.env,
-      PYTHONPATH: [
-        repoRoot,
-        ...(process.platform === 'win32' && !process.env.CHINESCAN_PYTHON
-          ? [resolve(repoRoot, '.venv/Lib/site-packages')]
-          : []),
-        process.env.PYTHONPATH,
-      ].filter(Boolean).join(delimiter),
+      PYTHONPATH: [repoRoot, process.env.PYTHONPATH].filter(Boolean).join(delimiter),
+      CHINESCAN_CONFIG_PATH: resolve(directory, 'config.toml'),
+      CHINESCAN_DATABASE_PATH: resolve(directory, 'records.sqlite3'),
+      CHINESCAN_REPORTS_DIR: resolve(directory, 'reports'),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
@@ -87,7 +87,7 @@ async function start(
   try {
     if (!child.stdin) throw new Error('Dashboard fixture credential pipe is unavailable.');
     child.stdin.on('error', () => { credentialsPipeFailed = true; });
-    child.stdin.end(`${JSON.stringify(credentials)}\n`);
+    child.stdin.end(emptyAccount ? '' : `${JSON.stringify(credentials)}\n`);
     const startedAt = Date.now();
     const deadline = startedAt + STARTUP_TIMEOUT_MS;
     let endpoint: { url: string } | undefined;
@@ -109,32 +109,68 @@ async function start(
     }
 
     // The child prints only the URL. Require HTTP readiness before sharing credentials with tests.
-    const readyDeadline = Date.now() + 10_000;
+    const readyDeadline = Date.now() + Math.min(READINESS_TIMEOUT_MS, STARTUP_TIMEOUT_MS);
+    let lastStatus = 'no response';
+    let lastBody = 'no response';
     while (Date.now() < readyDeadline) {
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`Dashboard fixture exited before HTTP readiness (code=${child.exitCode}).`);
       }
       try {
-        const response = await fetch(`${endpoint.url}/api/auth/session`, { signal: AbortSignal.timeout(1_000) });
-        if (response.status === 401) return { ...endpoint, ...credentials };
-      } catch { /* Continue until the bounded readiness deadline. */ }
+        const response = await fetch(`${endpoint.url}/api/auth/session`, {
+          signal: AbortSignal.timeout(READINESS_REQUEST_TIMEOUT_MS),
+        });
+        lastStatus = String(response.status);
+        const body = await response.text();
+        lastBody = redactDiagnostic(body);
+        let payload: unknown;
+        try { payload = JSON.parse(body) as unknown; } catch { payload = null; }
+        if (
+          response.status === 200 &&
+          payload !== null && typeof payload === 'object' &&
+          'authenticated' in payload && payload.authenticated === false &&
+          'email_masked' in payload && payload.email_masked === null &&
+          'signup_available' in payload && typeof payload.signup_available === 'boolean'
+        ) {
+          return { ...endpoint, ...credentials, credentialFile: resolve(directory, 'operator.json') };
+        }
+      } catch (error) {
+        lastStatus = 'request error';
+        lastBody = redactDiagnostic(String(error));
+      }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
     }
-    throw new Error('Dashboard fixture announced a URL but did not become HTTP-ready within 10 seconds.');
+    throw new Error(
+      `Dashboard fixture did not become ready within ${READINESS_TIMEOUT_MS / 1000} seconds; ` +
+      `last status=${lastStatus}, body=${lastBody}.`,
+    );
   } catch (error) {
     await stopOwned(child);
     throw new Error(`${String(error)}\nFixture stderr (last ${DIAGNOSTIC_LIMIT} chars):\n${stderr}`);
   }
 }
 
+function redactDiagnostic(value: string): string {
+  return value
+    .replace(/("?(?:password|passwd|pwd|hash|token|secret|credential)[^"\s]*"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^,}\s]+)/gi, '$1[REDACTED]')
+    .replace(/\$argon2(?:id|i|d)\$[^\s"']+/gi, '[REDACTED]')
+    .replace(/(?:[A-Za-z]:\\|\\\\)[^\s"'<>`,;)}\]]+/g, '[PATH]')
+    .replace(/\/(?:Users|home|root|tmp|var\/tmp)\/[^\s"'<>`,;)}\]]+/g, '[PATH]')
+    .slice(0, 1_000);
+}
+
 export default async function globalSetup(_config: FullConfig) {
   dataRoot = await mkdtemp(resolve(tmpdir(), 'chinescan-playwright-'));
   try {
     const urls = {
-      standard: await start(1800, makeCredentials()),
+      standard: await start(1800, makeCredentials(), false, false, true),
       expiry: await start(15, makeCredentials(), true),
+      signup: await start(1800, makeCredentials(), false, true),
+      emptyRoots: await start(1800, makeCredentials()),
     };
     process.env.CHINESCAN_BROWSER_TEST_URLS = JSON.stringify(urls);
+    process.env.CHINESCAN_BROWSER_PROJECT_FIXTURE = resolve(dataRoot, 'instance-0-ttl-1800-approved-project');
+    process.env.CHINESCAN_BROWSER_SCREENSHOT_DIR = resolve(tmpdir(), 'chinescan-projects-e2e-screenshots');
   } catch (error) {
     await Promise.all(children.map(stopOwned));
     await rm(dataRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
@@ -143,6 +179,8 @@ export default async function globalSetup(_config: FullConfig) {
   return async () => {
     await Promise.all(children.map(stopOwned));
     delete process.env.CHINESCAN_BROWSER_TEST_URLS;
+    delete process.env.CHINESCAN_BROWSER_PROJECT_FIXTURE;
+    delete process.env.CHINESCAN_BROWSER_SCREENSHOT_DIR;
     await rm(dataRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
   };
 }
