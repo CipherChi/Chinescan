@@ -15,6 +15,7 @@ import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,14 @@ EMAIL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-
 RESET_TOKEN_TTL_SECONDS = 15 * 60
 RESET_RATE_LIMIT_SECONDS = 60
 _CREDENTIAL_LOCK = threading.RLock()
-_COMMON_PASSWORDS = {"password123!", "password1234", "qwerty123456", "letmein12345", "changeme123"}
+_COMMON_PASSWORDS = frozenset(
+    line.strip().casefold()
+    for line in resources.files("chinescan.core.data")
+    .joinpath("common_passwords.txt")
+    .read_text(encoding="utf-8")
+    .splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+)
 _DUMMY_HASH = PasswordHasher().hash("Chinescan dummy verification only")
 
 

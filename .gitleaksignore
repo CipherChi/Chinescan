@@ -1,0 +1,3 @@
+# Historic generic-api-key match from the public common-password denylist in Phase 1;
+# the denylist is now loaded from chinescan/core/data/common_passwords.txt.
+945f9102ef8330f43ff148c4814420009d9830b4:chinescan/core/accounts.py:generic-api-key:28

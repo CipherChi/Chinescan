@@ -1,16 +1,28 @@
 import json
 import os
+from importlib import resources
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from chinescan.core.accounts import (
+    CredentialError,
     create_operator,
     issue_reset_token,
     migrate_legacy_operator,
     operator_status,
 )
 from chinescan.web.app import create_app
+
+
+def test_bundled_common_passwords_load_and_are_rejected(tmp_path: Path) -> None:
+    resource = resources.files("chinescan.core.data").joinpath("common_passwords.txt")
+    passwords = resource.read_text(encoding="utf-8").splitlines()
+    assert passwords
+    assert "password123!" in passwords
+    with pytest.raises(CredentialError, match="less common"):
+        create_operator(tmp_path / "operator.json", "operator@example.test", passwords[0])
 
 
 def test_unknown_login_and_forgot_use_dummy_argon2id(monkeypatch, tmp_path: Path) -> None:
