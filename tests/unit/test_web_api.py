@@ -577,10 +577,14 @@ def test_restore_operator_restores_retired_credential_and_backs_up_active(tmp_pa
         active_after = json.loads(credential.read_text(encoding="utf-8"))
         assert active_after["email"] == "restored@example.test"
         assert active_after["password_hash"] != current["password_hash"]
+        timestamped_backups = [
+            backup
+            for backup in external.glob("operator.json.bak-*")
+            if "_backup_metadata" in json.loads(backup.read_text(encoding="utf-8"))
+        ]
+        assert len(timestamped_backups) == 1
         assert (
-            json.loads(list(external.glob("operator.json.bak-*"))[0].read_text(encoding="utf-8"))[
-                "email"
-            ]
+            json.loads(timestamped_backups[0].read_text(encoding="utf-8"))["email"]
             == "current@example.test"
         )
         for secret in (
