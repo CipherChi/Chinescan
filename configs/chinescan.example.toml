@@ -2,3 +2,19 @@ database_path = "~/.local/share/chinescan/chinescan.sqlite3"
 log_level = "INFO"
 # Optional; required before Stage B1 managed malware intake. Choose a dedicated local path.
 # malware_managed_directory = "D:/chinescan-managed-samples"
+# Filesystem browsing is disabled until local roots are explicitly approved.
+# Use single-quoted TOML strings for Windows paths to preserve backslashes.
+# allowed_roots = ['C:\src']
+# extra_denied_paths = []
+# allow_soft_denied = false
+#
+# Bounded scanning defaults (reserved for later project-scanning phases).
+# max_files = 50000
+# max_total_bytes = 1073741824
+# max_file_bytes = 16777216
+# max_depth = 32
+# per_file_seconds = 2.0
+# job_deadline_seconds = 300
+#
+# GitHub importing remains disabled in this phase.
+# github_import_enabled = false

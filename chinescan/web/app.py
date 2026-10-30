@@ -29,6 +29,7 @@ from chinescan.core.cases import (
     CaseWorkflowError,
 )
 from chinescan.core.config.settings import Settings
+from chinescan.core.fs_policy import FilesystemBrowserService, policy_paths
 from chinescan.core.logging.redaction import redact
 from chinescan.core.logging.structured import configure_logging
 from chinescan.core.models.common import Confidence, FindingCategory, ScanVerdict, Severity
@@ -51,6 +52,7 @@ from chinescan.malware_analysis.managed import (
 )
 from chinescan.web.auth import (
     CredentialError,
+    LoginThrottle,
     ProgressiveLockout,
     Session,
     SessionStore,
@@ -442,6 +444,14 @@ def create_app(
         "Execution unavailable: configure managed storage and an operator registry."
     )
     active_settings = settings or Settings(_env_file=None)
+    hard_denied, soft_denied = policy_paths(active_settings)
+    fs_browser = FilesystemBrowserService(
+        list(active_settings.allowed_roots),
+        hard_denied,
+        soft_denied,
+        active_settings.allow_soft_denied,
+    )
+    fs_browse_throttle = LoginThrottle(limit=60, window_seconds=60)
     malware_config = (
         Path(malware_registry_path)
         if malware_registry_path
@@ -533,6 +543,22 @@ def create_app(
             result = Response("Local loopback access required.", status_code=400)
             result.headers["X-Request-ID"] = request_id
             return result
+        if request.url.path.startswith("/api/fs/"):
+            origin = request.headers.get("origin")
+            if origin:
+                parsed_origin = urlsplit(origin)
+                if (
+                    parsed_origin.scheme != request.url.scheme
+                    or parsed_origin.netloc.lower() != host.lower()
+                    or parsed_origin.path not in {"", "/"}
+                    or parsed_origin.query
+                    or parsed_origin.fragment
+                    or parsed_origin.username
+                    or parsed_origin.password
+                ):
+                    result = Response("Same-origin request required.", status_code=403)
+                    result.headers["X-Request-ID"] = request_id
+                    return result
         content_length = request.headers.get("content-length")
         if content_length:
             try:
@@ -1368,6 +1394,42 @@ def create_app(
             return _download_response(body, f"scan-report.{output_format}", output_format)
         except ReportingError as exc:
             raise _case_http_error(exc) from exc
+
+    @application.get("/api/fs/roots")
+    def filesystem_roots(
+        request: Request,
+        capability: Literal["project_directory", "log_location"] = Query(...),
+        session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:
+        if not fs_browse_throttle.allowed("fs:" + (request.client.host if request.client else "")):
+            raise HTTPException(status_code=429, detail="Browse rate limit reached; retry shortly.")
+        return fs_browser.roots_view(session.csrf_token, capability)
+
+    @application.get("/api/fs/list")
+    def filesystem_list(
+        request: Request,
+        directory_id: Annotated[str, Query(min_length=32, max_length=128)],
+        capability: Literal["project_directory", "log_location"] = Query(...),
+        session: Session = Depends(current_session),  # noqa: B008
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        cursor: Annotated[str | None, Query(max_length=128)] = None,
+    ) -> dict[str, object]:
+        if not fs_browse_throttle.allowed("fs:" + (request.client.host if request.client else "")):
+            raise HTTPException(status_code=429, detail="Browse rate limit reached; retry shortly.")
+        try:
+            return fs_browser.list_view(
+                session.csrf_token,
+                capability,
+                directory_id,
+                cursor=cursor,
+                limit=limit,
+            )
+        except ValueError as exc:
+            code = str(exc)
+            raise HTTPException(
+                status_code=400 if code == "invalid_page_size" else 404,
+                detail="Directory selection is unavailable.",
+            ) from exc
 
     if serve_frontend and FRONTEND_DIST.is_dir():
 

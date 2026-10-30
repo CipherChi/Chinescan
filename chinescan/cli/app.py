@@ -77,3 +77,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+app.add_typer(commands.fs_app, name="fs")

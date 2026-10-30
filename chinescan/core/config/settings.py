@@ -1,9 +1,11 @@
 """Typed application settings and CHINESCAN_ environment overrides."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,3 +28,40 @@ class Settings(BaseSettings):
     malware_managed_directory: Path | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     api_token: str | None = Field(default=None, repr=False)
+    allowed_roots: list[Path] = Field(default_factory=list)
+    extra_denied_paths: list[Path] = Field(default_factory=list)
+    allow_soft_denied: bool = False
+    github_import_enabled: bool = False
+    max_files: int = 50_000
+    max_total_bytes: int = 1_073_741_824
+    max_file_bytes: int = 16_777_216
+    max_depth: int = 32
+    per_file_seconds: float = 2.0
+    job_deadline_seconds: int = 300
+    data_source: Literal["real", "simulation"] = "real"
+    _allowed_root_validation: list[object] = PrivateAttr(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_configured_roots(self) -> Settings:
+        from chinescan.core.fs_policy import (
+            policy_paths,
+            storage_paths,
+            validate_allowed_roots,
+        )
+
+        hard, soft = policy_paths(self)
+        roots, statuses = validate_allowed_roots(
+            list(self.allowed_roots),
+            hard_denied=hard,
+            soft_denied=soft,
+            allow_soft_denied=self.allow_soft_denied,
+            storage_paths=storage_paths(self),
+        )
+        self.allowed_roots = roots
+        self._allowed_root_validation = statuses
+        return self
+
+    @property
+    def allowed_root_validation(self) -> list[object]:
+        """Path-free validation statuses for roots supplied at configuration load."""
+        return list(self._allowed_root_validation)

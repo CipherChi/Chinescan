@@ -17,6 +17,7 @@ from chinescan.core.cases import CaseWorkflow, CaseWorkflowError
 from chinescan.core.config.io import init_config, load_settings, validate_config
 from chinescan.core.config.settings import Settings
 from chinescan.core.errors import ConfigurationError, StorageError
+from chinescan.core.fs_policy import decide_path, policy_paths
 from chinescan.core.logging.redaction import redact
 from chinescan.core.models.common import Severity
 from chinescan.core.models.investigation import CaseStatus
@@ -1319,3 +1320,49 @@ def case_export(
         typer.echo("Case report could not be published safely.", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Wrote {output_format} case report: {output}")
+
+
+fs_app = typer.Typer(help="Check configured local filesystem scope without listing contents.")
+
+
+@fs_app.command("check")
+def fs_check(
+    path: Path = typer.Argument(...),  # noqa: B008
+    json_output: bool = typer.Option(False, "--json"),  # noqa: B008
+) -> None:
+    settings = _settings()
+    hard, soft = policy_paths(settings)
+    result = decide_path(
+        path,
+        allowed_roots=settings.allowed_roots,
+        hard_denied=hard,
+        soft_denied=soft,
+        allow_soft_denied=settings.allow_soft_denied,
+    )
+    output = {"allowed": result.allowed, "tier": result.tier, "reason_code": result.reason_code}
+    message = f"{'ALLOWED' if result.allowed else 'DENIED'} {result.tier} {result.reason_code}"
+    typer.echo(json.dumps(output) if json_output else message)
+    if not result.allowed:
+        raise typer.Exit(code=2)
+
+
+@fs_app.command("roots")
+def fs_roots(json_output: bool = typer.Option(False, "--json")) -> None:
+    settings = _settings()
+    values = [
+        {
+            "index": item.index,
+            "status": "valid" if item.valid else "invalid",
+            "reason_code": item.reason_code,
+        }
+        for item in settings.allowed_root_validation
+    ]
+    output = {"roots": values, "count": len(values)}
+    valid_count = sum(item.valid for item in settings.allowed_root_validation)
+    typer.echo(
+        json.dumps(output)
+        if json_output
+        else f"Configured roots: {len(values)}; valid: {valid_count}"
+    )
+    if any(not item.valid for item in settings.allowed_root_validation):
+        raise typer.Exit(code=2)
