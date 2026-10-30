@@ -105,7 +105,11 @@ class LogSourceRegistry:
             ids: set[str] = set()
             for item in raw["sources"]:
                 if not isinstance(item, dict) or set(item) - {
-                    "id", "name", "root", "rules", "iocs"
+                    "id",
+                    "name",
+                    "root",
+                    "rules",
+                    "iocs",
                 }:
                     raise ValueError
                 source_id, name = item.get("id"), item.get("name")

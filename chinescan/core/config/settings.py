@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,7 +58,7 @@ class Settings(BaseSettings):
             storage_paths=storage_paths(self),
         )
         self.allowed_roots = roots
-        self._allowed_root_validation = statuses
+        self._allowed_root_validation = cast(list[object], statuses)
         return self
 
     @property

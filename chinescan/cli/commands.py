@@ -7,6 +7,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from getpass import getpass
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import typer
@@ -17,7 +18,12 @@ from chinescan.core.cases import CaseWorkflow, CaseWorkflowError
 from chinescan.core.config.io import init_config, load_settings, validate_config
 from chinescan.core.config.settings import Settings
 from chinescan.core.errors import ConfigurationError, StorageError
-from chinescan.core.fs_policy import FilesystemBrowserService, decide_path, policy_paths
+from chinescan.core.fs_policy import (
+    FilesystemBrowserService,
+    RootValidation,
+    decide_path,
+    policy_paths,
+)
 from chinescan.core.logging.redaction import redact
 from chinescan.core.models.common import Severity
 from chinescan.core.models.investigation import CaseStatus
@@ -1350,22 +1356,23 @@ def fs_check(
 @fs_app.command("roots")
 def fs_roots(json_output: bool = typer.Option(False, "--json")) -> None:
     settings = _settings()
+    validations = cast(list[RootValidation], settings.allowed_root_validation)
     values = [
         {
             "index": item.index,
             "status": "valid" if item.valid else "invalid",
             "reason_code": item.reason_code,
         }
-        for item in settings.allowed_root_validation
+        for item in validations
     ]
     output = {"roots": values, "count": len(values)}
-    valid_count = sum(item.valid for item in settings.allowed_root_validation)
+    valid_count = sum(item.valid for item in validations)
     typer.echo(
         json.dumps(output)
         if json_output
         else f"Configured roots: {len(values)}; valid: {valid_count}"
     )
-    if any(not item.valid for item in settings.allowed_root_validation):
+    if any(not item.valid for item in validations):
         raise typer.Exit(code=2)
 
 

@@ -159,7 +159,7 @@ def _windows_drive_remote(path: Path) -> bool:
     buffer = ctypes.create_unicode_buffer(32_768)
     if not query(drive.rstrip(":"), buffer, len(buffer)):
         return False
-    targets = buffer[:].split("\0")
+    targets = (ctypes.cast(buffer, ctypes.c_wchar_p).value or "").split("\0")
     return any(_REMOTE_NT_DEVICE.match(item) for item in targets if item)
 
 

@@ -1086,7 +1086,8 @@ def create_app(
 
     @application.get("/api/log/sources/status")
     def log_sources_status(_session: Session = Depends(current_session)) -> dict[str, str]:  # noqa: B008
-        return dict(log_registry.status())
+        status = log_registry.status()
+        return {"status": status["status"], "reason": status["reason"]}
 
     @application.post("/api/log/jobs", response_model=LogJobResponse, status_code=202)
     def create_log_job(

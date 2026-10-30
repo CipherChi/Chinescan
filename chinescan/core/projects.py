@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import os
 import stat
 import tomllib
@@ -215,8 +216,9 @@ class ProjectService:
             for item in self._all_internal_and_file()
         ):
             raise ProjectError("duplicate_name", "A project with that name already exists.")
-        item = {
-            "project_id": str(uuid.uuid4()),
+        project_id = str(uuid.uuid4())
+        item: dict[str, Any] = {
+            "project_id": project_id,
             "name": normalized,
             "kind": "local",
             "root": str(decision.path),
@@ -224,7 +226,7 @@ class ProjectService:
             "created_at": _now(),
             "last_scan_refs": [],
         }
-        self.repository.save("project", item["project_id"], item)
+        self.repository.save("project", project_id, item)
         return self._public(item)
 
     def list(self) -> list[dict[str, Any]]:
@@ -364,7 +366,7 @@ class ProjectService:
             raise ProjectError("root_denied", "Project folder is not approved.")
         return decision.path
 
-    def code_projects(self) -> list[dict[str, str]]:
+    def code_projects(self) -> builtins.list[dict[str, str]]:
         """Legacy response shape retained for the existing Code assessments page."""
         return [
             {"project_id": str(item["project_id"]), "display_name": str(item["name"])}
@@ -381,7 +383,7 @@ class ProjectService:
             None,
         )
 
-    def _all_internal_and_file(self) -> list[dict[str, Any]]:
+    def _all_internal_and_file(self) -> builtins.list[dict[str, Any]]:
         stored = self.repository.list_records("project")
         names = {_name_key(str(row.get("name", ""))) for row in stored}
         return [

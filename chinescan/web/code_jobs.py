@@ -7,7 +7,7 @@ import uuid
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from chinescan.core.orchestration.code_scan import BuiltinRuleScanner, CodeScanService, ScanBounds
 from chinescan.core.projects import (
@@ -22,6 +22,10 @@ TERMINAL = {"succeeded", "failed", "interrupted"}
 
 ProjectConfigurationError = ProjectError
 ProjectRegistry = ProjectFileRegistry
+
+
+class ProjectResolver(Protocol):
+    def resolve(self, project_id: str) -> tuple[str, Path]: ...
 
 
 def _transition(job: dict[str, Any], status: str) -> None:
@@ -47,7 +51,7 @@ class CodeJobManager:
         self,
         repository: SQLiteRepository,
         lock: threading.RLock,
-        registry: ProjectRegistry,
+        registry: ProjectResolver,
         *,
         queue_limit: int = 4,
         reports_dir: Path | None = None,

@@ -586,7 +586,7 @@ class CodeScanService:
             tasks = {}
             for scanner in self.scanners:
                 if self.bounds and hasattr(scanner, "scan_profile"):
-                    task = pool.submit(scanner.scan_profile, profile)  # type: ignore[attr-defined]
+                    task = pool.submit(scanner.scan_profile, profile)
                 else:
                     task = pool.submit(scanner.scan, profile.root)
                 tasks[task] = scanner
