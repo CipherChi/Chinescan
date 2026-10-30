@@ -3,12 +3,30 @@ title = "Chinescan Gitleaks configuration"
 [extend]
 useDefault = true
 
-# These exact paths contain synthetic scanner inputs reviewed as non-credentials.
-# Keep the allowlist narrow so scanning remains enabled for application/config files.
-[allowlist]
-description = "Synthetic positive security-scanner fixtures only"
-paths = [
-  '''(^|/)fixtures/real-scanners/gitleaks-positive/credential\.txt$''',
-  '''(^|/)fixtures/sample-python-project/app\.py$''',
-  '''(^|/)tests/integration/test_real_scanners\.py$''',
+# Each exception requires both the exact fixture path and the exact synthetic value.
+[[allowlists]]
+description = "Synthetic GitHub-shaped token in the scanner-positive fixture"
+condition = "AND"
+paths = ['''(^|/)fixtures/real-scanners/gitleaks-positive/credential\.txt$''']
+regexTarget = "secret"
+regexes = ['''^ghp_0123456789abcdef0123456789abcdef0123$''']
+
+[[allowlists]]
+description = "Synthetic weak password in the intentionally unsafe scanner fixture"
+condition = "AND"
+paths = ['''(^|/)fixtures/sample-python-project/app\.py$''']
+regexTarget = "secret"
+regexes = ['''^example-fixture-password$''']
+
+[[allowlists]]
+description = "Bundled common-password denylist values are policy data, not stored credentials"
+condition = "AND"
+paths = ['''(^|/)chinescan/core/accounts\.py$''']
+regexTarget = "secret"
+regexes = [
+  '''^password123!$''',
+  '''^password1234$''',
+  '''^qwerty123456$''',
+  '''^letmein12345$''',
+  '''^changeme123$''',
 ]

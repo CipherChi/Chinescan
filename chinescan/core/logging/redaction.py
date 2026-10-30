@@ -16,7 +16,7 @@ _KEY_ASSIGNMENT = re.compile(
     r"(?i)(?P<prefix>[\"']?(?=[A-Za-z0-9_.-]*(?:password|passwd|pwd|hash|token|secret|"
     r"api[_-]?key|apikey|authorization|cookie|session|csrf|credential))"
     r"[A-Za-z_][A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)"
-    r"(?P<value>\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'|<[^>]*>|[^\s,;}\]]+)"
+    r"(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|<[^>]*>|[^\s,;}\]]+)"
 )
 _ARGON = re.compile(r"\$argon2(?:id|i|d)\$[^\s\"';}]+", re.IGNORECASE)
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*")

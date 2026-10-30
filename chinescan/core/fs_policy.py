@@ -12,7 +12,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import unquote
 
 if TYPE_CHECKING:
@@ -131,7 +131,7 @@ def _expand_8dot3(path: Path) -> Path:
     raw = str(path)
     if not _SHORT_COMPONENT.search(raw):
         return path
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = cast(Any, ctypes).windll.kernel32
     get_long_path = kernel32.GetLongPathNameW
     get_long_path.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
     get_long_path.restype = ctypes.c_uint32
@@ -149,7 +149,7 @@ def _windows_drive_remote(path: Path) -> bool:
     drive = path.drive
     if not drive:
         return False
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = cast(Any, ctypes).windll.kernel32
     drive_type = int(kernel32.GetDriveTypeW(drive + "\\"))
     if drive_type == 4:  # DRIVE_REMOTE
         return True
