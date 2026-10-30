@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import re
+import stat
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
@@ -38,15 +40,30 @@ IGNORED_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", 
 MAX_SOURCE_BYTES = 1_000_000
 MAX_SOURCE_FILES = 20_000
 MAX_TOTAL_SOURCE_BYTES = 250_000_000
+DEFAULT_IGNORED_DIRS = {".git", "node_modules", "venv", ".venv", "dist", "build", "__pycache__"}
 
 
 @dataclass(frozen=True)
+class ScanBounds:
+    max_files: int = 50_000
+    max_total_bytes: int = 1_073_741_824
+    max_file_bytes: int = 16_777_216
+    max_depth: int = 32
+    per_file_seconds: float = 2.0
+    job_deadline_seconds: int = 300
+
+
+@dataclass
 class ProjectProfile:
     """Detected local project traits used to describe code scan targets."""
 
     root: Path
     kinds: tuple[str, ...]
     source_files: tuple[Path, ...]
+    skipped_counts: dict[str, int] | None = None
+    files_scanned: int = 0
+    bytes_scanned: int = 0
+    deadline_at: float | None = None
 
 
 class FindingScanner(Protocol):
@@ -61,14 +78,19 @@ class ScannerError(Exception):
     """Expected scanner execution, availability, or output failure."""
 
 
-def detect_project(target: Path) -> ProjectProfile:
+def detect_project(target: Path, bounds: ScanBounds | None = None) -> ProjectProfile:
     """Resolve a local project directory and identify source files and manifests."""
+    candidate = target.expanduser()
+    if _contains_reparse_point(candidate):
+        raise ScannerError("Code scan target changed to a link or reparse point.")
     try:
-        root = target.expanduser().resolve(strict=True)
+        root = candidate.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise ScannerError("Target directory does not exist or is inaccessible.") from exc
     if not root.is_dir():
         raise ScannerError("Code scan target must be a local directory.")
+    if _contains_reparse_point(root):
+        raise ScannerError("Code scan target changed to a link or reparse point.")
 
     kinds: set[str] = set()
     sources: list[Path] = []
@@ -77,9 +99,29 @@ def detect_project(target: Path) -> ProjectProfile:
         raise ScannerError("A project directory could not be read; scan aborted.")
 
     total_bytes = 0
+    skipped: dict[str, int] = {}
+    files_seen = 0
+    deadline = time.monotonic() + bounds.job_deadline_seconds if bounds else None
     for directory, dirnames, filenames in os.walk(root, followlinks=False, onerror=walk_error):
-        dirnames[:] = sorted(name for name in dirnames if name not in IGNORED_DIRS)
         current = Path(directory)
+        depth = len(current.relative_to(root).parts)
+        dirnames[:] = sorted(
+            name for name in dirnames if name.casefold() not in DEFAULT_IGNORED_DIRS
+        )
+        if bounds and depth >= bounds.max_depth:
+            skipped["max_depth"] = skipped.get("max_depth", 0) + len(dirnames)
+            dirnames.clear()
+        for name in dirnames[:]:
+            child = current / name
+            if _contains_reparse_point(child):
+                skipped["reparse_point"] = skipped.get("reparse_point", 0) + 1
+                dirnames.remove(name)
+        if bounds and deadline is not None and time.monotonic() >= deadline:
+            skipped["job_deadline"] = (
+                skipped.get("job_deadline", 0) + len(filenames) + len(dirnames)
+            )
+            dirnames.clear()
+            continue
         names = set(filenames)
         if "pyproject.toml" in names or "requirements.txt" in names or "setup.py" in names:
             kinds.add("python")
@@ -87,20 +129,77 @@ def detect_project(target: Path) -> ProjectProfile:
             kinds.add("node")
         for name in sorted(filenames):
             path = current / name
-            if path.suffix.lower() in SOURCE_SUFFIXES and not path.is_symlink():
-                try:
-                    size = path.stat().st_size
-                    if size > MAX_SOURCE_BYTES:
-                        raise ScannerError(
-                            "Project contains a source file above the configured 1 MB limit."
-                        )
-                    sources.append(path)
-                    total_bytes += size
-                    if len(sources) > MAX_SOURCE_FILES or total_bytes > MAX_TOTAL_SOURCE_BYTES:
-                        raise ScannerError("Project exceeds the configured local scan size limits.")
-                except OSError:
+            files_seen += 1
+            if bounds and deadline is not None and time.monotonic() >= deadline:
+                skipped["job_deadline"] = skipped.get("job_deadline", 0) + 1
+                continue
+            if bounds and files_seen > bounds.max_files:
+                skipped["max_files"] = skipped.get("max_files", 0) + 1
+                continue
+            if path.suffix.lower() not in SOURCE_SUFFIXES:
+                continue
+            if _contains_reparse_point(path):
+                if bounds:
+                    skipped["reparse_point"] = skipped.get("reparse_point", 0) + 1
+                continue
+            try:
+                resolved_file = path.resolve(strict=True)
+                if os.path.commonpath(
+                    (os.path.normcase(str(root)), os.path.normcase(str(resolved_file)))
+                ) != os.path.normcase(str(root)):
+                    skipped["containment_changed"] = skipped.get("containment_changed", 0) + 1
                     continue
-    return ProjectProfile(root=root, kinds=tuple(sorted(kinds)), source_files=tuple(sources))
+                size = path.stat().st_size
+                file_limit = bounds.max_file_bytes if bounds else MAX_SOURCE_BYTES
+                if size > file_limit:
+                    if bounds:
+                        skipped["max_file_bytes"] = skipped.get("max_file_bytes", 0) + 1
+                        continue
+                    raise ScannerError(
+                        "Project contains a source file above the configured 1 MB limit."
+                    )
+                if bounds and total_bytes + size > bounds.max_total_bytes:
+                    skipped["max_total_bytes"] = skipped.get("max_total_bytes", 0) + 1
+                    continue
+                sources.append(path)
+                total_bytes += size
+                if not bounds and (
+                    len(sources) > MAX_SOURCE_FILES or total_bytes > MAX_TOTAL_SOURCE_BYTES
+                ):
+                    raise ScannerError("Project exceeds the configured local scan size limits.")
+            except OSError:
+                continue
+    return ProjectProfile(
+        root=root,
+        kinds=tuple(sorted(kinds)),
+        source_files=tuple(sources),
+        skipped_counts=skipped,
+        files_scanned=len(sources),
+        bytes_scanned=total_bytes,
+        deadline_at=deadline,
+    )
+
+
+def _contains_reparse_point(path: Path) -> bool:
+    """Reject links and Windows reparse points without following them."""
+    try:
+        absolute = path.absolute()
+        current = Path(absolute.anchor)
+        for component in absolute.parts[1:]:
+            current /= component
+            try:
+                metadata = current.lstat()
+            except FileNotFoundError:
+                return False
+            if stat.S_ISLNK(metadata.st_mode) or getattr(current, "is_junction", lambda: False)():
+                return True
+            if os.name == "nt" and getattr(metadata, "st_file_attributes", 0) & getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+            ):
+                return True
+        return False
+    except (OSError, RuntimeError, ValueError):
+        return True
 
 
 def make_finding(
@@ -179,17 +278,59 @@ class BuiltinRuleScanner:
         ),
     )
 
+    def __init__(self, bounds: ScanBounds | None = None) -> None:
+        self.bounds = bounds
+
     def scan(self, target: Path) -> list[Finding]:
-        profile = detect_project(target)
+        return self.scan_profile(detect_project(target, self.bounds))
+
+    def scan_profile(self, profile: ProjectProfile) -> list[Finding]:
         findings: list[Finding] = []
-        for source in profile.source_files:
+        for index, source in enumerate(profile.source_files):
+            if profile.deadline_at is not None and time.monotonic() >= profile.deadline_at:
+                counts = profile.skipped_counts
+                if counts is not None:
+                    counts["job_deadline"] = (
+                        counts.get("job_deadline", 0) + len(profile.source_files) - index
+                    )
+                break
+            started = time.monotonic()
             try:
                 text = source.read_text(encoding="utf-8", errors="replace")
             except OSError as exc:
                 raise ScannerError("A source file could not be read; scan aborted.") from exc
             relative = source.relative_to(profile.root).as_posix()
             for line_number, line in enumerate(text.splitlines(), start=1):
+                if self.bounds and (
+                    time.monotonic() - started > self.bounds.per_file_seconds
+                    or (profile.deadline_at is not None and time.monotonic() >= profile.deadline_at)
+                ):
+                    counts = profile.skipped_counts
+                    if counts is not None:
+                        key = (
+                            "job_deadline"
+                            if profile.deadline_at and time.monotonic() >= profile.deadline_at
+                            else "per_file_seconds"
+                        )
+                        counts[key] = counts.get(key, 0) + 1
+                    profile.files_scanned = max(0, profile.files_scanned - 1)
+                    try:
+                        profile.bytes_scanned = max(
+                            0, profile.bytes_scanned - source.stat().st_size
+                        )
+                    except OSError:
+                        pass
+                    findings = [
+                        item
+                        for item in findings
+                        if not item.location or not item.location.startswith(relative + ":")
+                    ]
+                    break
                 if len(line) > 10_000:
+                    if self.bounds and profile.skipped_counts is not None:
+                        profile.skipped_counts["long_lines"] = (
+                            profile.skipped_counts.get("long_lines", 0) + 1
+                        )
                     continue
                 for rule_id, pattern, severity, description in self._rules:
                     if pattern.search(line):
@@ -286,30 +427,34 @@ def deduplicate_findings(findings: list[Finding]) -> list[Finding]:
 
 
 def _coverage_for_project(
-    profile: ProjectProfile, scanners: list[str], failures: dict[str, str]
+    profile: ProjectProfile,
+    scanners: list[str],
+    failures: dict[str, str],
+    bounds: ScanBounds | None = None,
 ) -> CoverageReport:
     gaps: list[CoverageGap] = []
     long_lines = 0
     symlinks = 0
     unreadable = 0
-    for directory, dirnames, filenames in os.walk(profile.root, followlinks=False):
-        dirnames[:] = sorted(name for name in dirnames if name not in IGNORED_DIRS)
-        current = Path(directory)
-        for name in sorted(filenames):
-            path = current / name
-            if path.suffix.lower() not in SOURCE_SUFFIXES:
-                continue
-            if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
-                symlinks += 1
-                continue
-            try:
-                if path.stat().st_size > MAX_SOURCE_BYTES:
+    if not bounds:
+        for directory, dirnames, filenames in os.walk(profile.root, followlinks=False):
+            dirnames[:] = sorted(name for name in dirnames if name not in IGNORED_DIRS)
+            current = Path(directory)
+            for name in sorted(filenames):
+                path = current / name
+                if path.suffix.lower() not in SOURCE_SUFFIXES:
                     continue
-                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                    if len(line) > 10_000:
-                        long_lines += 1
-            except OSError:
-                unreadable += 1
+                if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+                    symlinks += 1
+                    continue
+                try:
+                    if path.stat().st_size > MAX_SOURCE_BYTES:
+                        continue
+                    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                        if len(line) > 10_000:
+                            long_lines += 1
+                except OSError:
+                    unreadable += 1
     if long_lines:
         gaps.append(
             CoverageGap(
@@ -340,10 +485,28 @@ def _coverage_for_project(
                 source=name,
             )
         )
+    for reason, count in sorted((profile.skipped_counts or {}).items()):
+        if count:
+            if reason == "long_lines":
+                gaps.append(
+                    CoverageGap(
+                        code="code_line_too_long",
+                        reason="Lines over 10,000 characters were skipped.",
+                        count=count,
+                    )
+                )
+                continue
+            gaps.append(
+                CoverageGap(
+                    code=f"bound_{reason}",
+                    reason=f"Some files or folders were skipped at the {reason} scan bound.",
+                    count=count,
+                )
+            )
     return CoverageReport(
         examined={
-            "files_scanned": len(profile.source_files),
-            "bytes_scanned": sum(path.stat().st_size for path in profile.source_files),
+            "files_scanned": profile.files_scanned,
+            "bytes_scanned": profile.bytes_scanned,
             "scanner_count": len(scanners),
         },
         gaps=gaps,
@@ -359,18 +522,22 @@ class CodeScanService:
         repository: Repository | None = None,
         max_workers: int = 3,
         repository_lock: threading.RLock | None = None,
+        bounds: ScanBounds | None = None,
+        project_id: str | None = None,
     ) -> None:
         self.scanners = scanners
         self.repository = repository
         self.max_workers = max(1, min(max_workers, 8))
         self.repository_lock = repository_lock
+        self.bounds = bounds
+        self.project_id = project_id
 
     def scan(self, target: Path) -> CodeScanResult:
         started = datetime.now(UTC)
         scan_id = str(uuid.uuid4())
         scanner_names = [scanner.name for scanner in self.scanners]
         try:
-            profile = detect_project(target)
+            profile = detect_project(target, self.bounds)
         except ScannerError as exc:
             message = str(exc)
             if "1 MB limit" in message:
@@ -403,6 +570,7 @@ class CodeScanService:
                         scanner=",".join(scanner_names) or "none",
                         started_at=started,
                         finished_at=datetime.now(UTC),
+                        project_id=self.project_id,
                         status="failed",
                         failures=failure_info,
                         coverage=coverage,
@@ -415,7 +583,13 @@ class CodeScanService:
         with ThreadPoolExecutor(
             max_workers=min(self.max_workers, max(1, len(self.scanners)))
         ) as pool:
-            tasks = {pool.submit(scanner.scan, profile.root): scanner for scanner in self.scanners}
+            tasks = {}
+            for scanner in self.scanners:
+                if self.bounds and hasattr(scanner, "scan_profile"):
+                    task = pool.submit(scanner.scan_profile, profile)  # type: ignore[attr-defined]
+                else:
+                    task = pool.submit(scanner.scan, profile.root)
+                tasks[task] = scanner
             for task in as_completed(tasks):
                 scanner = tasks[task]
                 try:
@@ -428,7 +602,7 @@ class CodeScanService:
                     )
 
         normalized_findings = deduplicate_findings(findings)
-        coverage = _coverage_for_project(profile, scanner_names, failures)
+        coverage = _coverage_for_project(profile, scanner_names, failures, self.bounds)
         for scanner in self.scanners:
             scanner_coverage = getattr(scanner, "coverage", None)
             if isinstance(scanner_coverage, CoverageReport):
@@ -465,7 +639,9 @@ class CodeScanService:
             scanner=",".join(scanner_names) or "none",
             started_at=started,
             finished_at=finished,
-            status="partial" if failures else "complete",
+            status="partial"
+            if failures or any((profile.skipped_counts or {}).values())
+            else "complete",
             failures=failures,
             coverage=coverage,
         )
@@ -481,7 +657,10 @@ class CodeScanService:
                     scanner=",".join(scanner_names) or "none",
                     started_at=started,
                     finished_at=finished,
-                    status="partial" if failures else "complete",
+                    status="partial"
+                    if failures or any((profile.skipped_counts or {}).values())
+                    else "complete",
+                    project_id=self.project_id,
                     project_types=list(profile.kinds),
                     finding_ids=[finding.finding_id for finding in normalized_findings],
                     failures=failures,
@@ -491,6 +670,8 @@ class CodeScanService:
                 )
                 self.repository.save("scan", scan_id, scan_record.model_dump(mode="json"))
                 for finding in normalized_findings:
+                    if self.project_id:
+                        finding = finding.model_copy(update={"project_id": self.project_id})
                     self.repository.save(
                         "finding", finding.finding_id, finding.model_dump(mode="json")
                     )

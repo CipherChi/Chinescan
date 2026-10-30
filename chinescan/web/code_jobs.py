@@ -3,53 +3,25 @@
 from __future__ import annotations
 
 import threading
-import tomllib
 import uuid
 from collections import deque
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from chinescan.core.orchestration.code_scan import BuiltinRuleScanner, CodeScanService
+from chinescan.core.orchestration.code_scan import BuiltinRuleScanner, CodeScanService, ScanBounds
+from chinescan.core.projects import (
+    ProjectError,
+    ProjectFileRegistry,
+)
+from chinescan.core.projects import safe_project_tree as safe_project_tree
 from chinescan.core.report_store import ReportStoreError, save_scan_reports
 from chinescan.core.storage.sqlite import SQLiteRepository
 
 TERMINAL = {"succeeded", "failed", "interrupted"}
 
-
-class ProjectConfigurationError(ValueError):
-    """Invalid or unsafe operator project configuration."""
-
-
-def _canonical_directory(value: str | Path) -> Path:
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        raise ProjectConfigurationError("Project roots must be absolute local paths.")
-    if _has_link_component(path):
-        raise ProjectConfigurationError("Project roots may not be symlinks.")
-    try:
-        resolved = path.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise ProjectConfigurationError(
-            "A configured project root is missing or inaccessible."
-        ) from exc
-    if not resolved.is_dir():
-        raise ProjectConfigurationError("A configured project root must be a directory.")
-    return resolved
-
-
-def _has_link_component(path: Path) -> bool:
-    absolute = path.absolute()
-    current = Path(absolute.anchor)
-    for part in absolute.parts[1:]:
-        current /= part
-        try:
-            if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
-                return True
-        except OSError:
-            return True
-    return False
+ProjectConfigurationError = ProjectError
+ProjectRegistry = ProjectFileRegistry
 
 
 def _transition(job: dict[str, Any], status: str) -> None:
@@ -70,113 +42,6 @@ def _transition(job: dict[str, Any], status: str) -> None:
         job["finished_at"] = _now()
 
 
-class ProjectRegistry:
-    def __init__(self, config_path: Path | str | None, protected: list[Path]) -> None:
-        self.config_path = Path(config_path).expanduser() if config_path else None
-        self.protected = [path.resolve(strict=False) for path in protected]
-
-    def list(self) -> list[dict[str, str]]:
-        if self.config_path is None or not self.config_path.is_file():
-            return []
-        if _has_link_component(self.config_path):
-            return []
-        try:
-            raw = tomllib.loads(self.config_path.read_text(encoding="utf-8"))
-            if set(raw) - {"projects", "protected_paths"}:
-                raise ValueError
-            protected = [*self.protected, *_configured_protected(raw)]
-            entries = raw.get("projects", [])
-            if not isinstance(entries, list):
-                raise ValueError
-            result = []
-            seen: set[str] = set()
-            for entry in entries:
-                if not isinstance(entry, dict) or set(entry) != {"id", "name", "root"}:
-                    raise ValueError
-                project_id, name = entry["id"], entry["name"]
-                if (
-                    not isinstance(project_id, str)
-                    or not project_id
-                    or len(project_id) > 80
-                    or project_id in seen
-                    or not isinstance(name, str)
-                    or not name
-                    or len(name) > 120
-                ):
-                    raise ValueError
-                seen.add(project_id)
-                try:
-                    root = _canonical_directory(entry["root"])
-                    self._check_protected(root, protected)
-                except (TypeError, ProjectConfigurationError):
-                    continue
-                result.append({"project_id": project_id, "display_name": name})
-            return result
-        except (OSError, ValueError, TypeError):
-            return []
-
-    def resolve(self, project_id: str) -> tuple[str, Path]:
-        projects = self.list()
-        if (
-            self.config_path is None
-            or not self.config_path.is_file()
-            or _has_link_component(self.config_path)
-        ):
-            raise ProjectConfigurationError("Approved project configuration is unavailable.")
-        try:
-            raw = tomllib.loads(self.config_path.read_text(encoding="utf-8"))
-            protected = [*self.protected, *_configured_protected(raw)]
-            matches = [item for item in raw.get("projects", []) if item.get("id") == project_id]
-            if len(matches) != 1 or project_id not in {item["project_id"] for item in projects}:
-                raise ProjectConfigurationError("Approved project is unavailable.")
-            root = _canonical_directory(matches[0]["root"])
-            self._check_protected(root, protected)
-            return str(matches[0]["name"]), root
-        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
-            raise ProjectConfigurationError("Approved project is unavailable.") from exc
-
-    def _check_protected(self, root: Path, protected_paths: Sequence[Path]) -> None:
-        for protected in protected_paths:
-            if root == protected or root in protected.parents or protected in root.parents:
-                raise ProjectConfigurationError("Project overlaps protected application data.")
-
-
-def _configured_protected(raw: dict[str, Any]) -> list[Path]:
-    value = raw.get("protected_paths", [])
-    if not isinstance(value, list):
-        raise ValueError
-    result: list[Path] = []
-    for item in value:
-        if not isinstance(item, str):
-            raise ValueError
-        path = Path(item).expanduser()
-        if not path.is_absolute() or _has_link_component(path):
-            raise ValueError
-        result.append(path.resolve(strict=False))
-    return result
-
-
-def safe_project_tree(root: Path) -> bool:
-    """Reject internal symlinks/reparse points; scanner traversal then stays root bounded."""
-    try:
-        canonical = _canonical_directory(root)
-        import os
-
-        for directory, dirs, files in os.walk(canonical, followlinks=False):
-            current = Path(directory)
-            for name in [*dirs, *files]:
-                child = current / name
-                if (
-                    child.is_symlink()
-                    or getattr(child, "is_junction", lambda: False)()
-                    or child.resolve(strict=True).parent != current.resolve(strict=True)
-                ):
-                    return False
-        return True
-    except (OSError, RuntimeError, ProjectConfigurationError):
-        return False
-
-
 class CodeJobManager:
     def __init__(
         self,
@@ -186,10 +51,12 @@ class CodeJobManager:
         *,
         queue_limit: int = 4,
         reports_dir: Path | None = None,
+        bounds: ScanBounds | None = None,
     ) -> None:
         self.repository, self.lock, self.registry = repository, lock, registry
         self.queue_limit = queue_limit
         self.reports_dir = reports_dir
+        self.bounds = bounds
         self._condition = threading.Condition()
         self._queue: deque[str] = deque()
         self._thread: threading.Thread | None = None
@@ -266,18 +133,23 @@ class CodeJobManager:
                 continue
             try:
                 _name, root = self.registry.resolve(job["project_id"])
-                if not safe_project_tree(root):
-                    raise ProjectConfigurationError(
-                        "Project tree contains an unsupported link or path entry."
-                    )
                 _transition(job, "running")
                 self._save(job)
                 result = CodeScanService(
-                    [BuiltinRuleScanner()], self.repository, repository_lock=self.lock
+                    [BuiltinRuleScanner(self.bounds)],
+                    self.repository,
+                    repository_lock=self.lock,
+                    bounds=self.bounds,
+                    project_id=job["project_id"],
                 ).scan(root)
                 # Scan persistence must have completed before linking it to the job.
                 with self.lock:
                     persisted = self.repository.get("scan", result.scan_id)
+                    project_record = self.repository.get("project", job["project_id"])
+                    if persisted is not None and project_record is not None:
+                        refs = [result.scan_id, *project_record.get("last_scan_refs", [])]
+                        project_record["last_scan_refs"] = list(dict.fromkeys(refs))[:10]
+                        self.repository.save("project", job["project_id"], project_record)
                     if persisted is not None and self.reports_dir is not None:
                         try:
                             paths = save_scan_reports(
@@ -290,12 +162,18 @@ class CodeJobManager:
                     raise RuntimeError("Scan result persistence did not complete.")
                 _transition(job, "succeeded")
                 job["scan_id"] = result.scan_id
+                if result.coverage and any(
+                    gap.code.startswith("bound_") for gap in result.coverage.gaps
+                ):
+                    job["warning"] = (
+                        "Assessment is partial; files or folders were skipped at configured limits."
+                    )
             except Exception as exc:
                 if job.get("status") not in TERMINAL:
                     _transition(job, "failed")
                 job["error"] = (
                     str(exc)
-                    if isinstance(exc, ProjectConfigurationError)
+                    if isinstance(exc, ProjectError)
                     else "Assessment failed; details were withheld."
                 )
             self._save(job)

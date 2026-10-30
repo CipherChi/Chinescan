@@ -1,4 +1,4 @@
-import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogSourceRegistryStatus, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample } from './types';
+import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogSourceRegistryStatus, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample, ProjectDetail, ProjectSummary, FsDirectory, FsPage } from './types';
 
 let csrfToken = '';
 export function setCsrfToken(token: string) { csrfToken = token; }
@@ -17,7 +17,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
-    const message = typeof detail.detail === 'string' ? detail.detail : 'The request could not be completed.';
+    const message = typeof detail.detail === 'string'
+      ? detail.detail
+      : typeof detail.detail?.message === 'string' ? detail.detail.message : 'The request could not be completed.';
     throw new Error(message);
   }
   return response.json() as Promise<T>;
@@ -50,6 +52,17 @@ export const api = {
   },
   finding: (id: string) => request<Finding>(`/api/findings/${encodeURIComponent(id)}`),
   codeProjects: () => request<CodeProject[]>('/api/code/projects'),
+  fsRoots: (capability: 'project_directory' | 'log_location') => request<{ items: FsDirectory[] }>(`/api/fs/roots?${new URLSearchParams({ capability })}`),
+  fsList: (capability: 'project_directory' | 'log_location', directoryId: string, cursor?: string | null) => {
+    const query = new URLSearchParams({ capability, directory_id: directoryId, limit: '100' });
+    if (cursor) query.set('cursor', cursor);
+    return request<FsPage>(`/api/fs/list?${query}`);
+  },
+  projects: () => request<ProjectSummary[]>('/api/projects'),
+  project: (id: string) => request<ProjectDetail>(`/api/projects/${encodeURIComponent(id)}`),
+  addProject: (name: string, directory_id: string) => request<ProjectSummary>('/api/projects', { method: 'POST', body: JSON.stringify({ name, directory_id }) }),
+  removeProject: (id: string, confirmation: string) => request<{ status: string }>(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ confirmation }) }),
+  startProjectCodeJob: (id: string) => request<CodeJob>(`/api/projects/${encodeURIComponent(id)}/code-jobs`, { method: 'POST', body: '{}' }),
   codeJobs: () => request<Page<CodeJob>>('/api/code/jobs?limit=50&offset=0'),
   codeJob: (id: string) => request<CodeJob>(`/api/code/jobs/${encodeURIComponent(id)}`),
   startCodeJob: (project_id: string) => request<CodeJob>('/api/code/jobs', { method: 'POST', body: JSON.stringify({ project_id }) }),

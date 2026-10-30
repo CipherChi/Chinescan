@@ -78,3 +78,4 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 app.add_typer(commands.fs_app, name="fs")
+app.add_typer(commands.projects_app, name="projects")

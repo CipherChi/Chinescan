@@ -17,7 +17,7 @@ from chinescan.core.cases import CaseWorkflow, CaseWorkflowError
 from chinescan.core.config.io import init_config, load_settings, validate_config
 from chinescan.core.config.settings import Settings
 from chinescan.core.errors import ConfigurationError, StorageError
-from chinescan.core.fs_policy import decide_path, policy_paths
+from chinescan.core.fs_policy import FilesystemBrowserService, decide_path, policy_paths
 from chinescan.core.logging.redaction import redact
 from chinescan.core.models.common import Severity
 from chinescan.core.models.investigation import CaseStatus
@@ -27,6 +27,7 @@ from chinescan.core.orchestration.code_scan import (
     FindingScanner,
     ScannerError,
 )
+from chinescan.core.projects import ProjectError, ProjectFileRegistry, ProjectService
 from chinescan.core.report_store import ReportStoreError, save_scan_reports
 from chinescan.core.reporting import (
     ReportingError,
@@ -1366,3 +1367,128 @@ def fs_roots(json_output: bool = typer.Option(False, "--json")) -> None:
     )
     if any(not item.valid for item in settings.allowed_root_validation):
         raise typer.Exit(code=2)
+
+
+projects_app = typer.Typer(help="Manage locally approved code projects.")
+
+
+def _project_service() -> ProjectService:
+    settings = _settings()
+    hard, soft = policy_paths(settings)
+    legacy = ProjectFileRegistry(
+        Path.home() / ".config" / "chinescan" / "projects.toml",
+        [
+            settings.database_path.parent,
+            settings.database_path,
+            settings.reports_dir,
+            Path.home() / ".config" / "chinescan" / "operator.json",
+        ],
+    )
+    return ProjectService(
+        SQLiteRepository(settings.database_path),
+        FilesystemBrowserService(settings.allowed_roots, hard, soft, settings.allow_soft_denied),
+        legacy,
+        allowed_roots=settings.allowed_roots,
+        hard_denied=hard,
+        soft_denied=soft,
+        allow_soft_denied=settings.allow_soft_denied,
+    )
+
+
+@projects_app.command("list")
+def projects_list(json_output: bool = typer.Option(False, "--json")) -> None:
+    service = _project_service()
+    try:
+        items = service.list()
+        typer.echo(
+            json.dumps({"projects": items}, sort_keys=True)
+            if json_output
+            else "\n".join(
+                f"{item['name']} ({item['configured_by']}) — {item['project_id']}" for item in items
+            )
+            or "No projects configured."
+        )
+    finally:
+        service.repository.close()
+
+
+@projects_app.command("add")
+def projects_add(
+    name: str = typer.Option(..., "--name"),
+    path: Path | None = typer.Option(None, "--path", help="Absolute approved project folder."),  # noqa: B008
+    directory_id: str | None = typer.Option(
+        None, "--directory-id", help="Browser capability ID (session-bound)."
+    ),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    if path is None or directory_id is not None:
+        code = "directory_id_session_bound" if directory_id is not None else "project_path_required"
+        message = (
+            "Use --path here; folder-browser IDs are short-lived and bound to a web session."
+            if directory_id is not None
+            else "Provide an approved local folder with --path."
+        )
+        typer.echo(json.dumps({"error": code}) if json_output else message, err=True)
+        raise typer.Exit(code=2)
+    service = _project_service()
+    try:
+        item = service.create(name, service.resolve_path(path))
+        typer.echo(
+            json.dumps(item, sort_keys=True)
+            if json_output
+            else f"Added project {item['name']} ({item['project_id']})."
+        )
+    except ProjectError as exc:
+        typer.echo(
+            json.dumps({"error": exc.code}) if json_output else f"Project add failed: {exc.code}.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()
+
+
+@projects_app.command("show")
+def projects_show(
+    project_id: str = typer.Argument(...), json_output: bool = typer.Option(False, "--json")
+) -> None:
+    service = _project_service()
+    try:
+        item = service.get(project_id)
+        typer.echo(
+            json.dumps(item, sort_keys=True)
+            if json_output
+            else f"{item['name']} · {item['kind']} · configured by {item['configured_by']}"
+        )
+    except ProjectError as exc:
+        typer.echo(f"Project show failed: {exc.code}.", err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()
+
+
+@projects_app.command("remove")
+def projects_remove(
+    project_id: str = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes", help="Confirm removal of this project record."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    if not yes:
+        typer.echo("Pass --yes to remove a UI-created project record.", err=True)
+        raise typer.Exit(code=2)
+    service = _project_service()
+    try:
+        item = next((value for value in service.list() if value["project_id"] == project_id), None)
+        if item is None:
+            raise ProjectError("project_not_found", "Project not found.")
+        service.remove(project_id, str(item["name"]))
+        typer.echo(
+            json.dumps({"status": "removed"})
+            if json_output
+            else "Project record removed; folder contents were not changed."
+        )
+    except ProjectError as exc:
+        typer.echo(f"Project removal failed: {exc.code}.", err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()

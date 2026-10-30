@@ -590,6 +590,20 @@ class FilesystemBrowserService:
             "truncated": truncated,
         }
 
+    def resolve_selection(self, session: str, capability: Capability, directory_id: str) -> Path:
+        """Resolve an opaque picker selection and repeat its full path policy check."""
+        selection = self._lookup(session, capability, directory_id)
+        decision = self._decision(selection.path, selection.boundary)
+        if (
+            not decision.allowed
+            or decision.path is None
+            or not decision.path.is_dir()
+            or _key(decision.path) != _key(selection.path)
+            or not _under(decision.path, selection.boundary)
+        ):
+            raise ValueError("directory_unavailable")
+        return decision.path
+
     def _snapshot_children(self, directory: Path, boundary: Path) -> tuple[tuple[str, ...], bool]:
         decision = self._decision(directory, boundary)
         if not decision.allowed or decision.path is None:

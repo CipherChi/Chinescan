@@ -90,6 +90,7 @@ def main() -> None:
     parser.add_argument("--ttl", required=True, type=int)
     parser.add_argument("--hold-scan-until-expiry", action="store_true")
     parser.add_argument("--empty-account", action="store_true")
+    parser.add_argument("--projects-enabled", action="store_true")
     args = parser.parse_args()
     operator_email, operator_password = (
         (None, None) if args.empty_account else _read_test_credentials()
@@ -100,6 +101,7 @@ def main() -> None:
     project = args.data_dir.parent / f"{args.data_dir.name}-approved-project"
     project.mkdir()
     (project / "app.py").write_text("eval(user_input)\n", encoding="utf-8")
+    (project / "worker.py").write_text("exec(payload)\n", encoding="utf-8")
     projects_config = args.data_dir / "projects.toml"
     projects_config.write_text(
         "[[projects]]\n"
@@ -108,6 +110,9 @@ def main() -> None:
         f'root = "{project.as_posix()}"\n',
         encoding="utf-8",
     )
+    config_path = args.data_dir / "config.toml"
+    configured_roots = f"['{project.as_posix()}']" if args.projects_enabled else "[]"
+    config_path.write_text(f"allowed_roots = {configured_roots}\n", encoding="utf-8")
     log_source = args.data_dir.parent / f"{args.data_dir.name}-approved-logs"
     log_source.mkdir()
     (log_source / "auth.jsonl").write_text(
@@ -211,6 +216,8 @@ def main() -> None:
             _env_file=None,
             database_path=database,
             malware_managed_directory=managed_root,
+            allowed_roots=[project] if args.projects_enabled else [],
+            max_files=1,
         ),
     )
     served_application: ASGIApp = application

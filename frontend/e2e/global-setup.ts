@@ -56,17 +56,22 @@ async function start(
   credentials: TestCredentials,
   holdScanUntilExpiry = false,
   emptyAccount = false,
+  projectsEnabled = false,
 ): Promise<{ url: string; email: string; password: string; credentialFile: string }> {
   const directory = resolve(dataRoot, `instance-${children.length}-ttl-${ttl}`);
   const python = 'uv';
   const args = ['run', 'python', pythonHarness, '--data-dir', directory, '--ttl', String(ttl)];
   if (holdScanUntilExpiry) args.push('--hold-scan-until-expiry');
   if (emptyAccount) args.push('--empty-account');
+  if (projectsEnabled) args.push('--projects-enabled');
   const child = spawn(python, args, {
     cwd: repoRoot,
     env: {
       ...process.env,
       PYTHONPATH: [repoRoot, process.env.PYTHONPATH].filter(Boolean).join(delimiter),
+      CHINESCAN_CONFIG_PATH: resolve(directory, 'config.toml'),
+      CHINESCAN_DATABASE_PATH: resolve(directory, 'records.sqlite3'),
+      CHINESCAN_REPORTS_DIR: resolve(directory, 'reports'),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
@@ -158,11 +163,14 @@ export default async function globalSetup(_config: FullConfig) {
   dataRoot = await mkdtemp(resolve(tmpdir(), 'chinescan-playwright-'));
   try {
     const urls = {
-      standard: await start(1800, makeCredentials()),
+      standard: await start(1800, makeCredentials(), false, false, true),
       expiry: await start(15, makeCredentials(), true),
       signup: await start(1800, makeCredentials(), false, true),
+      emptyRoots: await start(1800, makeCredentials()),
     };
     process.env.CHINESCAN_BROWSER_TEST_URLS = JSON.stringify(urls);
+    process.env.CHINESCAN_BROWSER_PROJECT_FIXTURE = resolve(dataRoot, 'instance-0-ttl-1800-approved-project');
+    process.env.CHINESCAN_BROWSER_SCREENSHOT_DIR = resolve(tmpdir(), 'chinescan-projects-e2e-screenshots');
   } catch (error) {
     await Promise.all(children.map(stopOwned));
     await rm(dataRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
@@ -171,6 +179,8 @@ export default async function globalSetup(_config: FullConfig) {
   return async () => {
     await Promise.all(children.map(stopOwned));
     delete process.env.CHINESCAN_BROWSER_TEST_URLS;
+    delete process.env.CHINESCAN_BROWSER_PROJECT_FIXTURE;
+    delete process.env.CHINESCAN_BROWSER_SCREENSHOT_DIR;
     await rm(dataRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
   };
 }

@@ -43,6 +43,8 @@ from chinescan.core.models.investigation import (
     Scan,
     TimelineEntry,
 )
+from chinescan.core.orchestration.code_scan import ScanBounds
+from chinescan.core.projects import ProjectError, ProjectService
 from chinescan.core.reporting import ReportingError, render_case_report, render_report, scan_data
 from chinescan.core.storage.sqlite import SQLiteRepository
 from chinescan.malware_analysis.managed import (
@@ -216,6 +218,17 @@ class CaseStatusRequest(BaseModel):
 class CodeJobCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: str = Field(min_length=1, max_length=80)
+
+
+class ProjectCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    directory_id: str = Field(min_length=32, max_length=128)
+
+
+class ProjectRemoveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: str = Field(min_length=1, max_length=120)
 
 
 class LogJobCreateRequest(BaseModel):
@@ -419,12 +432,6 @@ def create_app(
             else Path.home() / ".config" / "chinescan" / "projects.toml",
         ],
     )
-    jobs = CodeJobManager(
-        repository,
-        db_lock,
-        registry,
-        reports_dir=(settings or Settings(_env_file=None)).reports_dir,
-    )
     log_registry = LogSourceRegistry(
         log_sources_path,
         [
@@ -451,6 +458,30 @@ def create_app(
         soft_denied,
         active_settings.allow_soft_denied,
     )
+    project_service = ProjectService(
+        repository,
+        fs_browser,
+        registry,
+        allowed_roots=list(active_settings.allowed_roots),
+        hard_denied=hard_denied,
+        soft_denied=soft_denied,
+        allow_soft_denied=active_settings.allow_soft_denied,
+    )
+    jobs = CodeJobManager(
+        repository,
+        db_lock,
+        project_service,
+        reports_dir=active_settings.reports_dir,
+        bounds=ScanBounds(
+            max_files=active_settings.max_files,
+            max_total_bytes=active_settings.max_total_bytes,
+            max_file_bytes=active_settings.max_file_bytes,
+            max_depth=active_settings.max_depth,
+            per_file_seconds=active_settings.per_file_seconds,
+            job_deadline_seconds=active_settings.job_deadline_seconds,
+        ),
+    )
+    project_throttle = LoginThrottle(limit=20, window_seconds=60)
     fs_browse_throttle = LoginThrottle(limit=60, window_seconds=60)
     malware_config = (
         Path(malware_registry_path)
@@ -501,6 +532,7 @@ def create_app(
     )
     application.state.repository = repository
     application.state.project_registry = registry
+    application.state.project_service = project_service
     application.state.log_source_registry = log_registry
     application.state.log_job_manager = log_jobs
     application.state.malware_job_manager = malware_jobs
@@ -797,9 +829,94 @@ def create_app(
             "recent_scans": [_scan_summary(scan) for scan in recent],
         }
 
+    @application.get("/api/projects")
+    def list_projects(_session: Session = Depends(current_session)) -> list[dict[str, Any]]:  # noqa: B008
+        return project_service.list()
+
+    @application.get("/api/projects/{project_id}")
+    def get_project(
+        project_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:
+        try:
+            return project_service.get(project_id)
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=404, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+
+    @application.post("/api/projects", status_code=201)
+    def add_project(
+        payload: ProjectCreateRequest,
+        request: Request,
+        session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            return project_service.create_from_selection(
+                payload.name, session.csrf_token, payload.directory_id
+            )
+        except (ProjectError, ValueError) as exc:
+            code = exc.code if isinstance(exc, ProjectError) else "directory_unavailable"
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": code,
+                    "message": str(exc)
+                    if isinstance(exc, ProjectError)
+                    else "The selected folder is unavailable.",
+                },
+            ) from exc
+
+    @application.delete("/api/projects/{project_id}")
+    def remove_project(
+        project_id: str,
+        payload: ProjectRemoveRequest,
+        request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, str]:
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            project_service.remove(project_id, payload.confirmation)
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=409, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+        return {"status": "removed"}
+
+    @application.post(
+        "/api/projects/{project_id}/code-jobs", response_model=CodeJobResponse, status_code=202
+    )
+    def create_project_code_job(
+        project_id: str,
+        request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            return jobs.submit(project_id)
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=422, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+        except OverflowError as exc:
+            raise HTTPException(
+                status_code=429, detail="The code assessment queue is full."
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=409, detail="An assessment is already queued or running."
+            ) from exc
+
     @application.get("/api/code/projects", response_model=list[CodeProjectResponse])
     def code_projects(_session: Session = Depends(current_session)) -> list[dict[str, str]]:  # noqa: B008
-        return registry.list()
+        return project_service.code_projects()
 
     @application.post("/api/code/jobs", response_model=CodeJobResponse, status_code=202)
     def create_code_job(
