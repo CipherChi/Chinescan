@@ -23,7 +23,7 @@ def test_authenticated_status_endpoint_preserves_sources_array(tmp_path: Path) -
     credential = tmp_path / "operator.json"
     source_file = tmp_path / "log-sources.toml"
     source_file.write_text("sources = []\n", encoding="utf-8")
-    create_operator(credential, "operator", "synthetic-account-password")
+    create_operator(credential, "operator@example.test", "synthetic-account-password")
     client = TestClient(
         create_app(
             tmp_path / "records.sqlite3",
@@ -37,7 +37,7 @@ def test_authenticated_status_endpoint_preserves_sources_array(tmp_path: Path) -
     assert client.get("/api/log/sources/status").status_code == 401
     login = client.post(
         "/api/auth/login",
-        json={"username": "operator", "password": "synthetic-account-password"},
+        json={"email": "operator@example.test", "password": "synthetic-account-password"},
         headers={"Origin": "http://127.0.0.1"},
     )
     assert login.status_code == 200

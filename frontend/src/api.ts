@@ -11,23 +11,30 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (response.status === 401) {
     if (path === '/api/auth/login') {
       const detail = await response.json().catch(() => ({}));
-      throw new Error(typeof detail.detail === 'string' ? detail.detail : 'Invalid username or password.');
+      throw new Error(typeof detail.detail === 'string' ? detail.detail : 'Invalid email or password.');
     }
     throw new UnauthorizedError();
   }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
-    throw new Error(typeof detail.detail === 'string' ? detail.detail : 'The request could not be completed.');
+    const message = typeof detail.detail === 'string' ? detail.detail : 'The request could not be completed.';
+    throw new Error(message);
   }
   return response.json() as Promise<T>;
 }
 
 export class UnauthorizedError extends Error {}
 export const api = {
-  session: () => request<{ username: string; csrf_token: string }>('/api/auth/session'),
-  login: (username: string, password: string) => request<{ username: string; csrf_token: string }>('/api/auth/login', {
-    method: 'POST', body: JSON.stringify({ username, password }),
+  session: () => request<{ authenticated: boolean; email_masked: string | null; signup_available: boolean }>('/api/auth/session'),
+  csrf: () => request<{ csrf_token: string }>('/api/auth/csrf'),
+  login: (email: string, password: string) => request<{ email: string; csrf_token: string }>('/api/auth/login', {
+    method: 'POST', body: JSON.stringify({ email, password }),
   }),
+  signup: (email: string, password: string) => request<{ email: string; csrf_token: string }>('/api/auth/signup', {
+    method: 'POST', body: JSON.stringify({ email, password }),
+  }),
+  forgotPassword: (email: string) => request<{ status: string }>('/api/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
+  resetPassword: (email: string, token: string, password: string) => request<{ status: string }>('/api/auth/reset-password', { method: 'POST', body: JSON.stringify({ email, token, password }) }),
   logout: () => request<{ status: string }>('/api/auth/logout', { method: 'POST' }),
   overview: () => request<Overview>('/api/overview'),
   scans: (offset: number, status: string) => {

@@ -8,6 +8,7 @@ import { MalwareWorkspace } from './MalwareWorkspace';
 
 type Section = 'overview' | 'scans' | 'findings' | 'cases' | 'jobs' | 'logs' | 'malware';
 type Detail = { kind: 'scan'; id: string } | { kind: 'finding'; id: string } | null;
+type AuthPage = 'login' | 'signup' | 'forgot' | 'forgot-confirmed' | 'reset';
 
 function messageOf(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.';
@@ -19,7 +20,8 @@ function dateOf(value: string | null) {
 
 export function App() {
   const [ready, setReady] = useState(false);
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [signupAvailable, setSignupAvailable] = useState(true);
   const [error, setError] = useState('');
   const [section, setSection] = useState<Section>('overview');
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -30,23 +32,29 @@ export function App() {
   const [detail, setDetail] = useState<Detail>(null);
   const [detailData, setDetailData] = useState<Scan | Finding | null>(null);
   const [busy, setBusy] = useState(false);
+  const [authPage, setAuthPage] = useState<AuthPage>(routeFromPath());
   const [caseScanId, setCaseScanId] = useState('');
 
   const signOut = useCallback(() => {
-    setCsrfToken(''); setUsername(''); setOverview(null); setScanPage(null); setFindingPage(null);
-    setDetail(null); setDetailData(null);
+    setCsrfToken(''); setEmail(''); setOverview(null); setScanPage(null); setFindingPage(null);
+    setDetail(null); setDetailData(null); setAuthPage('login'); window.history.replaceState({}, '', '/');
   }, []);
 
   useEffect(() => {
-    api.session().then((session) => {
-      setUsername(session.username); setCsrfToken(session.csrf_token);
+    api.session().then(async (session) => {
+      setSignupAvailable(session.signup_available);
+      if (session.authenticated) {
+        setEmail(session.email_masked ?? 'Operator');
+        const csrf = await api.csrf();
+        setCsrfToken(csrf.csrf_token);
+      }
     }).catch((reason: unknown) => {
       if (!(reason instanceof UnauthorizedError)) setError(messageOf(reason));
     }).finally(() => setReady(true));
   }, []);
 
   const loadSection = useCallback(async (selected: Section, offset = 0, filterValue = '') => {
-    if (!username) return;
+    if (!email) return;
     setBusy(true); setError('');
     try {
       if (selected === 'overview') setOverview(await api.overview());
@@ -56,9 +64,9 @@ export function App() {
       if (reason instanceof UnauthorizedError) signOut();
       else setError(messageOf(reason));
     } finally { setBusy(false); }
-  }, [username, signOut]);
+  }, [email, signOut]);
 
-  useEffect(() => { if (username) void loadSection(section, page * 20, filter); }, [username, section, page, filter, loadSection]);
+  useEffect(() => { if (email) void loadSection(section, page * 20, filter); }, [email, section, page, filter, loadSection]);
 
   useEffect(() => {
     if (!detail) { setDetailData(null); return; }
@@ -72,8 +80,8 @@ export function App() {
     event.preventDefault(); setBusy(true); setError('');
     const form = new FormData(event.currentTarget);
     try {
-      const session = await api.login(String(form.get('username')), String(form.get('password')));
-      setCsrfToken(session.csrf_token); setUsername(session.username);
+      const session = await api.login(String(form.get('email')), String(form.get('password')));
+      setCsrfToken(session.csrf_token); setEmail(session.email);
     } catch (reason) { setError(messageOf(reason)); }
     finally { setBusy(false); }
   }
@@ -86,7 +94,27 @@ export function App() {
   }
 
   if (!ready) return <CenteredState title="Connecting to Chinetscan" detail="Checking your local session…" />;
-  if (!username) return <Login error={error} busy={busy} onSubmit={submitLogin} onRetry={() => window.location.reload()} />;
+  if (!email) return authPage === 'signup'
+    ? !signupAvailable
+      ? <SignupDisabled onBack={() => navigateAuth('login', setAuthPage)}/>
+      : <Signup busy={busy} error={error} onBack={() => navigateAuth('login', setAuthPage)} onSubmit={async (operatorEmail, password) => {
+      setBusy(true); setError('');
+      try { const session = await api.signup(operatorEmail, password); setCsrfToken(session.csrf_token); setEmail(session.email); window.history.replaceState({}, '', '/'); }
+      catch (reason) { setError(messageOf(reason)); }
+      finally { setBusy(false); }
+    }}/>
+    : authPage === 'forgot'
+      ? <ForgotPassword busy={busy} error={error} onBack={() => navigateAuth('login', setAuthPage)} onSubmit={async (operatorEmail) => {
+        setBusy(true); setError('');
+        try { await api.forgotPassword(operatorEmail); setAuthPage('forgot-confirmed'); }
+        catch { setAuthPage('forgot-confirmed'); }
+        finally { setBusy(false); }
+      }}/>
+      : authPage === 'reset'
+        ? <ResetPassword busy={busy} error={error} onBack={() => navigateAuth('login', setAuthPage)} onSuccess={() => { setError(''); navigateAuth('login', setAuthPage); }}/>
+        : authPage === 'forgot-confirmed'
+          ? <RecoveryInstructions onBack={() => navigateAuth('login', setAuthPage)} onReset={() => navigateAuth('reset', setAuthPage)}/>
+          : <Login error={error} busy={busy} signupAvailable={signupAvailable} onSubmit={submitLogin} onRetry={() => window.location.reload()} onSignup={() => { navigateAuth('signup', setAuthPage); setError(''); }} onForgot={() => { navigateAuth('forgot', setAuthPage); setError(''); }} />;
 
   const title = section === 'overview' ? 'Overview' : section === 'scans' ? 'Scan history' : section === 'findings' ? 'Findings' : section === 'cases' ? 'Cases' : section === 'jobs' ? 'Code assessments' : section === 'malware' ? 'Malware triage' : 'Log analysis';
   const nav = (id: Section, label: string, glyph: string) => <button className={`nav-link ${section === id ? 'active' : ''}`} key={id} onClick={() => { setSection(id); setPage(0); setFilter(''); setDetail(null); }}><span className="nav-glyph" aria-hidden="true">{glyph}</span>{label}{id === 'scans' && overview ? <span className="nav-count">{overview.scan_count}</span> : null}</button>;
@@ -96,12 +124,12 @@ export function App() {
       <div className="brand"><div className="brand-mark" aria-hidden="true"><span>c</span><i /></div><div><strong>Chinetscan</strong><small>LOCAL ANALYST CONSOLE</small></div></div>
       <div className="nav-caption">WORKSPACE</div>
       <nav aria-label="Main navigation">{nav('overview', 'Overview', '⌂')}{nav('jobs', 'Code assessments', '⌘')}{nav('logs', 'Log analysis', '≋')}{nav('malware', 'Malware triage', '◇')}{nav('scans', 'Scans', '⌕')}{nav('findings', 'Findings', '◈')}{nav('cases', 'Cases', '▤')}</nav>
-      <div className="sidebar-bottom"><div className="local-indicator"><span />LOCAL INSTANCE</div><p>Assessment data stays on this device.</p><div className="profile"><div className="avatar">{username.slice(0, 1).toUpperCase()}</div><div className="profile-name"><strong>{username}</strong><small>Local operator</small></div><button className="icon-button" onClick={logout} disabled={busy} aria-label="Sign out" title="Sign out">↗</button></div></div>
+      <div className="sidebar-bottom"><div className="local-indicator"><span />LOCAL INSTANCE</div><p>Assessment data stays on this device.</p><div className="profile"><div className="avatar">{email.slice(0, 1).toUpperCase()}</div><div className="profile-name"><strong>{email}</strong><small>Local operator</small></div><button className="icon-button" onClick={logout} disabled={busy} aria-label="Sign out" title="Sign out">↗</button></div></div>
     </aside>
     <main className="main-content">
-      <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><b>/</b><strong>{title}</strong></div><div className="topbar-right"><span className="secure-pill"><span>●</span> Loopback secured</span><div className="top-avatar">{username.slice(0, 1).toUpperCase()}</div></div></header>
+      <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><b>/</b><strong>{title}</strong></div><div className="topbar-right"><span className="secure-pill"><span>●</span> Loopback secured</span><div className="top-avatar">{email.slice(0, 1).toUpperCase()}</div></div></header>
       <section className="page-content">
-        <div className="page-heading"><div><div className="eyebrow">ANALYST WORKSPACE</div><h1>{title}</h1><p>{section === 'overview' ? 'A clear view of your locally stored assessment activity.' : section === 'scans' ? 'Review completed and partial local assessments.' : section === 'findings' ? 'Triage findings from supported local assessments.' : section === 'cases' ? 'Investigate persisted scans with notes, links, timelines, and reports.' : section === 'jobs' ? 'Start and review bounded assessments of operator approved local projects.' : 'Analyze operator-approved local exports with bounded parsing and local detections.'}</p></div>{section !== 'overview' && section !== 'cases' && section !== 'jobs' && section !== 'logs' && <div className="list-controls"><label className="filter-control"><span aria-hidden="true">⌕</span><select aria-label={section === 'scans' ? 'Filter scan status' : 'Filter finding severity'} value={filter} onChange={(event) => { setPage(0); setFilter(event.target.value); }}><option value="">All {section === 'scans' ? 'statuses' : 'severities'}</option>{section === 'scans' ? <><option value="complete">Complete</option><option value="partial">Partial</option></> : <>{['critical','high','medium','low','info'].map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}</>}</select></label></div>}</div>
+        <div className="page-heading"><div><div className="eyebrow">ANALYST WORKSPACE</div><h1>{title}</h1><p>{section === 'overview' ? 'A clear view of your locally stored assessment activity.' : section === 'scans' ? 'Review completed and partial local assessments.' : section === 'findings' ? 'Triage findings from supported local assessments.' : section === 'cases' ? 'Investigate persisted scans with notes, links, timelines, and reports.' : section === 'jobs' ? 'Start and review bounded assessments of operator approved local projects.' : section === 'malware' ? 'Static triage of operator-registered samples. No execution.' : 'Analyze operator-approved local exports with bounded parsing and local detections.'}</p></div>{section !== 'overview' && section !== 'cases' && section !== 'jobs' && section !== 'logs' && <div className="list-controls"><label className="filter-control"><span aria-hidden="true">⌕</span><select aria-label={section === 'scans' ? 'Filter scan status' : 'Filter finding severity'} value={filter} onChange={(event) => { setPage(0); setFilter(event.target.value); }}><option value="">All {section === 'scans' ? 'statuses' : 'severities'}</option>{section === 'scans' ? <><option value="complete">Complete</option><option value="partial">Partial</option></> : <>{['critical','high','medium','low','info'].map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}</>}</select></label></div>}</div>
         {error && <div className="alert-error" role="alert"><span>!</span><div><strong>We couldn’t load this view</strong><p>{error}</p></div><button onClick={() => void loadSection(section, page * 20, filter)}>Retry</button></div>}
         {busy && <div className="loading-line" aria-label="Loading"><span /></div>}
         {section === 'overview' && <OverviewPanel data={overview} onScans={() => setSection('scans')} onFindings={() => setSection('findings')} onOpen={(id) => setDetail({ kind: 'scan', id })} />}
@@ -117,8 +145,45 @@ export function App() {
   </div>;
 }
 
-function Login({ error, busy, onSubmit, onRetry }: { error: string; busy: boolean; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void; onRetry: () => void }) {
-  return <div className="login-page"><div className="login-orb orb-one"/><div className="login-orb orb-two"/><section className="login-card"><div className="login-brand"><div className="brand-mark"><span>c</span><i /></div><span>Chinetscan</span></div><div className="login-label">LOCAL SECURITY WORKSPACE</div><h1>Welcome back</h1><p>Sign in to access your local assessment data.</p><form onSubmit={onSubmit}><label htmlFor="username">Operator name</label><input id="username" name="username" autoComplete="username" required maxLength={100}/><label htmlFor="password">Password</label><input id="password" name="password" type="password" autoComplete="current-password" required maxLength={1024}/>{error && <div className="login-error" role="alert">{error}<button type="button" onClick={onRetry}>Retry session check</button></div>}<button className="primary-button" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}<span aria-hidden="true">→</span></button></form><div className="login-foot"><span>◉</span> Available from this device only</div></section><footer className="login-footer">Chinetscan <span>•</span> Local analyst console</footer></div>;
+function Login({ error, busy, signupAvailable, onSubmit, onRetry, onSignup, onForgot }: { error: string; busy: boolean; signupAvailable: boolean; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void; onRetry: () => void; onSignup: () => void; onForgot: () => void }) {
+  return <AuthShell><div className="login-label">LOCAL SECURITY WORKSPACE</div><h1>Welcome back</h1><p>Sign in to access your local assessment data.</p><form onSubmit={onSubmit}><label htmlFor="login-email">Email</label><input id="login-email" name="email" type="email" autoComplete="email" required maxLength={254}/><label htmlFor="login-password">Password</label><input id="login-password" name="password" type="password" autoComplete="current-password" required maxLength={1024}/>{error && <div className="login-error" role="alert" aria-live="assertive">{error}<button type="button" onClick={onRetry}>Retry session check</button></div>}<button className="primary-button" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}<span aria-hidden="true">→</span></button></form><button type="button" className="signup-link" onClick={onForgot}>Forgot password?</button>{signupAvailable ? <button type="button" className="signup-link" onClick={onSignup}>Create operator account</button> : <p role="status" aria-live="polite">An operator account is already configured. Sign in or use forgot password to recover access.</p>}<AuthFooter/></AuthShell>;
+}
+
+function SignupDisabled({ onBack }: { onBack: () => void }) {
+  return <AuthShell><div className="login-label">LOCAL SECURITY WORKSPACE</div><h1>Operator account already exists</h1><p>ChineScan supports one local operator account. Sign in or use forgot password to recover access.</p><button className="primary-button" onClick={onBack}>Back to sign in</button><AuthFooter/></AuthShell>;
+}
+
+function Signup({ busy, error, onBack, onSubmit }: { busy: boolean; error: string; onBack: () => void; onSubmit: (email: string, password: string) => void }) {
+  const [mismatch, setMismatch] = useState(false);
+  function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const data = new FormData(event.currentTarget);
+    const password = String(data.get('password')); const confirmation = String(data.get('confirm-password'));
+    setMismatch(password !== confirmation);
+    if (password === confirmation && password.length >= 12) onSubmit(String(data.get('email')), password);
+  }
+  return <AuthShell><div className="login-label">LOCAL SECURITY WORKSPACE</div><h1>Create operator account</h1><p>The first local operator account unlocks this workspace.</p><form onSubmit={submit}><label htmlFor="signup-email">Email</label><input id="signup-email" name="email" type="email" autoComplete="email" required maxLength={254}/><label htmlFor="signup-password">Password</label><input id="signup-password" name="password" type="password" autoComplete="new-password" required minLength={12} maxLength={1024} aria-describedby="password-requirement"/><small id="password-requirement">Use at least 12 characters.</small><label htmlFor="confirm-password">Confirm password</label><input id="confirm-password" name="confirm-password" type="password" autoComplete="new-password" required maxLength={1024} aria-invalid={mismatch} aria-describedby={mismatch ? 'confirm-error' : undefined}/>{mismatch && <small id="confirm-error" role="alert" aria-live="assertive">Passwords do not match.</small>}{error && <div className="login-error" role="alert" aria-live="assertive">{error}</div>}<button className="primary-button" disabled={busy}>{busy ? 'Creating account…' : 'Create account'}<span aria-hidden="true">→</span></button></form><button type="button" className="signup-link" onClick={onBack}>Back to sign in</button><AuthFooter/></AuthShell>;
+}
+
+function routeFromPath(): AuthPage {
+  return window.location.pathname === '/signup' ? 'signup' : window.location.pathname === '/forgot-password' ? 'forgot' : window.location.pathname === '/reset-password' ? 'reset' : 'login';
+}
+function navigateAuth(page: AuthPage, setPage: (page: AuthPage) => void) {
+  const path = page === 'login' || page === 'forgot-confirmed' ? '/' : page === 'forgot' ? '/forgot-password' : page === 'reset' ? '/reset-password' : '/signup';
+  window.history.pushState({}, '', path); setPage(page);
+}
+function AuthShell({ children }: { children: React.ReactNode }) {
+  return <div className="login-page"><div className="login-orb orb-one"/><div className="login-orb orb-two"/><section className="login-card"><div className="login-brand"><div className="brand-mark"><span>c</span><i /></div><span>Chinetscan</span></div>{children}</section><footer className="login-footer">Chinetscan <span>•</span> Local analyst console</footer></div>;
+}
+function AuthFooter() { return <div className="login-foot"><span>◉</span> Available from this device only</div>; }
+function ForgotPassword({ busy, error, onBack, onSubmit }: { busy: boolean; error: string; onBack: () => void; onSubmit: (email: string) => void }) {
+  return <AuthShell><div className="login-label">LOCAL ACCOUNT RECOVERY</div><h1>Forgot password?</h1><p>Enter your operator email to see local recovery instructions.</p><form onSubmit={(event) => { event.preventDefault(); onSubmit(String(new FormData(event.currentTarget).get('email'))); }}><label htmlFor="forgot-email">Email</label><input id="forgot-email" name="email" type="email" autoComplete="email" required maxLength={254}/>{error && <div className="login-error" role="alert">{error}</div>}<button className="primary-button" disabled={busy}>{busy ? 'Checking…' : 'Continue'}<span aria-hidden="true">→</span></button></form><button className="signup-link" onClick={onBack}>Back to sign in</button><AuthFooter/></AuthShell>;
+}
+function RecoveryInstructions({ onBack, onReset }: { onBack: () => void; onReset: () => void }) {
+  return <AuthShell><div className="login-label">LOCAL ACCOUNT RECOVERY</div><h1>Continue recovery locally</h1><p>If the account exists, run <code>uv run chinescan web reset-password --email your@email</code> in the ChineScan terminal. Enter the one-time token printed there on the reset page within 15 minutes.</p><button className="primary-button" onClick={onReset}>Enter reset token <span aria-hidden="true">→</span></button><button className="signup-link" onClick={onBack}>Back to sign in</button><AuthFooter/></AuthShell>;
+}
+function ResetPassword({ busy, error, onBack, onSuccess }: { busy: boolean; error: string; onBack: () => void; onSuccess: () => void }) {
+  const [fieldError, setFieldError] = useState(''); const [complete, setComplete] = useState(false);
+  return <AuthShell><div className="login-label">LOCAL ACCOUNT RECOVERY</div><h1>Reset password</h1>{complete ? <><p>Password reset. You can now sign in with the new password.</p><button className="primary-button" onClick={onSuccess}>Back to sign in</button></> : <><p>Use the one-time token from the local ChineScan terminal.</p><form onSubmit={async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); const email = String(form.get('email')); const token = String(form.get('token')); const password = String(form.get('password')); if (password !== String(form.get('confirm-password'))) { setFieldError('Passwords do not match.'); return; } if (password.length < 12) { setFieldError('Use at least 12 characters.'); return; } setFieldError(''); try { await api.resetPassword(email, token, password); setComplete(true); } catch { setFieldError('Reset could not be completed. Request a new local token.'); } }}><label htmlFor="reset-email">Email</label><input id="reset-email" name="email" type="email" autoComplete="email" required maxLength={254}/><label htmlFor="reset-token">Reset token</label><input id="reset-token" name="token" autoComplete="off" required minLength={32} maxLength={256}/><label htmlFor="reset-password">New password</label><input id="reset-password" name="password" type="password" autoComplete="new-password" required minLength={12} maxLength={1024} aria-describedby="reset-requirement"/><small id="reset-requirement">Use at least 12 characters.</small><label htmlFor="reset-confirm">Confirm password</label><input id="reset-confirm" name="confirm-password" type="password" autoComplete="new-password" required maxLength={1024} aria-invalid={fieldError === 'Passwords do not match.'} aria-describedby={fieldError === 'Passwords do not match.' ? 'reset-confirm-error' : undefined}/>{fieldError === 'Passwords do not match.' && <small id="reset-confirm-error" role="alert">{fieldError}</small>}{fieldError && fieldError !== 'Passwords do not match.' && <div className="login-error" role="alert">{fieldError}</div>}{error && <div className="login-error" role="alert">{error}</div>}<button className="primary-button" disabled={busy}>{busy ? 'Resetting…' : 'Reset password'}<span aria-hidden="true">→</span></button></form><button className="signup-link" onClick={onBack}>Back to sign in</button><AuthFooter/></>}</AuthShell>;
 }
 
 function CenteredState({ title, detail }: { title: string; detail: string }) { return <div className="center-state"><div className="spinner"/><h1>{title}</h1><p>{detail}</p></div>; }

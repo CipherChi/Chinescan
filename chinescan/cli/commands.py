@@ -4,8 +4,10 @@ import json
 import os
 import tempfile
 from contextlib import suppress
+from datetime import UTC, datetime
 from getpass import getpass
 from pathlib import Path
+from uuid import uuid4
 
 import typer
 from sqlalchemy.exc import SQLAlchemyError
@@ -57,7 +59,18 @@ from chinescan.scanners.external import (
 )
 from chinescan.scanners.indicators import IndicatorScanner
 from chinescan.web.app import create_app
-from chinescan.web.auth import CredentialError, create_operator
+from chinescan.web.auth import (
+    CredentialError,
+    create_operator,
+    issue_reset_token,
+    migrate_legacy_operator,
+    migrate_operator_email_for_reset,
+    normalize_email,
+    operator_identity_summary,
+    operator_status,
+    set_operator_password,
+    timestamped_credential_backup,
+)
 
 
 def version() -> None:
@@ -77,14 +90,15 @@ web_app = typer.Typer(help="Start or bootstrap the authenticated loopback dashbo
 
 @web_app.command("bootstrap")
 def web_bootstrap(
-    username: str = typer.Option(..., prompt=True),
+    email: str = typer.Option(..., prompt=True),
     credential_file: Path | None = typer.Option(None, "--credential-file"),  # noqa: B008
+    json_output: bool = typer.Option(False, "--json"),  # noqa: B008
 ) -> None:
     """Create the one local operator account; passwords are entered without echo."""
     try:
         path = _operator_credential_path(credential_file)
     except CredentialError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=2) from exc
     password = getpass("Operator password (12+ characters): ")
     confirmation = getpass("Confirm operator password: ")
@@ -92,11 +106,323 @@ def web_bootstrap(
         typer.echo("Passwords do not match.", err=True)
         raise typer.Exit(code=2)
     try:
-        create_operator(path, username, password)
+        create_operator(path, email, password)
     except CredentialError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=2) from exc
-    typer.echo(f"Local operator account created at {path}.")
+    typer.echo(
+        json.dumps({"status": "active"}) if json_output else "Local operator account created."
+    )
+
+
+@web_app.command("reset-password")
+def web_reset_password(
+    email: str = typer.Option(..., "--email", prompt=True),
+    credential_file: Path | None = typer.Option(None, "--credential-file"),  # noqa: B008
+    issue_link: bool = typer.Option(False, "--issue-link"),  # noqa: B008
+    json_output: bool = typer.Option(False, "--json"),  # noqa: B008
+) -> None:
+    """Set a password locally or issue a one-time reset URL for the local UI."""
+    try:
+        path = _operator_credential_path(credential_file)
+        migrate_legacy_operator(path)
+    except CredentialError:
+        typer.echo("Password reset could not be completed.", err=True)
+        raise typer.Exit(code=2) from None
+    if issue_link:
+        try:
+            token = issue_reset_token(path, email)
+        except CredentialError:
+            typer.echo("Password reset could not be completed.", err=True)
+            raise typer.Exit(code=2) from None
+        reset_url = f"http://127.0.0.1:8765/reset-password?token={token}"
+        typer.echo(json.dumps({"reset_url": reset_url}) if json_output else reset_url)
+        return
+    password = getpass("New password (12-128 characters): ")
+    confirmation = getpass("Confirm new password: ")
+    if password != confirmation:
+        typer.echo("Passwords do not match.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        set_operator_password(path, email, password)
+    except CredentialError:
+        typer.echo("Password reset could not be completed.", err=True)
+        raise typer.Exit(code=2) from None
+    typer.echo(json.dumps({"status": "password_reset"}) if json_output else "Password updated.")
+
+
+@web_app.command("operator-status")
+def web_operator_status(
+    credential_file: Path | None = typer.Option(None, "--credential-file"),  # noqa: B008
+    json_output: bool = typer.Option(False, "--json"),  # noqa: B008
+) -> None:
+    """Report only the local operator credential state."""
+    state = operator_status(_operator_credential_path(credential_file))
+    typer.echo(json.dumps({"status": state}) if json_output else state)
+
+
+@web_app.command("recover-operator")
+def web_recover_operator(
+    credential_file: Path | None = typer.Option(None, "--credential-file"),  # noqa: B008
+) -> None:
+    """Back up, then migrate/reset or retire the local operator identity."""
+    try:
+        path = _operator_credential_path(credential_file)
+        timestamped_credential_backup(path)
+    except CredentialError as exc:
+        typer.echo(str(redact(str(exc))), err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo("A timestamped credential backup was created.")
+    action = typer.prompt("Choose action (reset or retire)", default="reset").strip().lower()
+    if action not in {"reset", "retire"}:
+        typer.echo("Unknown recovery action. No changes made.", err=True)
+        raise typer.Exit(code=2)
+    confirmation = typer.prompt("Type RECOVER to confirm")
+    if confirmation != "RECOVER":
+        typer.echo("No changes made.")
+        return
+    if action == "retire":
+        path.unlink()
+        typer.echo("Operator credential retired. Application data was not changed.")
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        current = data.get("email")
+        if not isinstance(current, str):
+            current = data.get("username", data.get("legacy_username", ""))
+        try:
+            current_email = normalize_email(current)
+        except CredentialError:
+            current_email = ""
+        prompted = typer.prompt("Operator email", default=current_email)
+        email = normalize_email(prompted)
+        token = migrate_operator_email_for_reset(path, email)
+    except (CredentialError, OSError, ValueError, TypeError):
+        typer.echo(
+            "Recovery could not be completed. The timestamped backup is preserved.", err=True
+        )
+        raise typer.Exit(code=2) from None
+    typer.echo("Email identity updated. Set a new password on /reset-password within 15 minutes.")
+    typer.echo(f"http://127.0.0.1:8765/reset-password?token={token}")
+
+
+def _operator_archive_path(active: Path, kind: str) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    candidate = active.with_name(f"{active.name}.{kind}-{stamp}")
+    counter = 1
+    while candidate.exists():
+        candidate = active.with_name(f"{active.name}.{kind}-{stamp}-{counter}")
+        counter += 1
+    return candidate
+
+
+def _backup_operator_file(active: Path) -> Path:
+    backup = _operator_archive_path(active, "bak")
+    temporary: Path | None = None
+    try:
+        record = json.loads(active.read_text(encoding="utf-8"))
+        email = record.get("email", "")
+        try:
+            normalized = normalize_email(str(email))
+            local, _, domain = normalized.partition("@")
+            masked = f"{local[:1]}***@{domain}"
+        except CredentialError:
+            masked = "unavailable"
+        record["_backup_metadata"] = {
+            "id": uuid4().hex,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "schema_version": record.get("schema_version", "legacy"),
+            "email_masked": masked,
+        }
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".operator-backup-", dir=active.parent)
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(record, stream, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            temporary.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(temporary, backup)
+    except (OSError, ValueError, TypeError):
+        with suppress(OSError):
+            backup.unlink(missing_ok=True)
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
+        raise
+    return backup
+
+
+def _operator_archives(active: Path) -> list[Path]:
+    parent = active.parent
+    patterns = (
+        f"{active.name}.retired-*",
+        f"{active.name}.bak-*",
+        f"{active.name}.*.bak",
+    )
+    candidates: set[Path] = set()
+    for pattern in patterns:
+        for candidate in parent.glob(pattern):
+            if candidate.is_file() and not candidate.is_symlink():
+                candidates.add(candidate)
+    return sorted(candidates, key=lambda item: item.name.casefold())
+
+
+@web_app.command("retire-operator")
+def web_retire_operator(
+    credential_file: Path | None = typer.Option(None, "--credential-file"),  # noqa: B008
+    json_output: bool = typer.Option(False, "--json"),  # noqa: B008
+) -> None:
+    """Back up and retire only the active operator credential file."""
+    try:
+        active = _operator_credential_path(credential_file)
+    except CredentialError as exc:
+        typer.echo(str(redact(str(exc))), err=True)
+        raise typer.Exit(code=2) from exc
+    if not active.is_file():
+        typer.echo("There is no active operator account to retire.")
+        return
+    try:
+        backup = _backup_operator_file(active)
+        operator_username, has_email = operator_identity_summary(active)
+    except (OSError, CredentialError):
+        # If identity inspection fails, do not change the active credential.
+        if "backup" in locals():
+            try:
+                backup.unlink()
+            except OSError:
+                pass
+        typer.echo(
+            "Could not safely prepare operator retirement. The active credential is unchanged.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
+
+    retired = _operator_archive_path(active, "retired")
+    if json_output:
+        typer.echo(json.dumps({"status": "awaiting_confirmation"}))
+    else:
+        typer.echo(f"Operator username: {operator_username}")
+        typer.echo(f"Email field present: {'yes' if has_email else 'no'}")
+        typer.echo("Active operator will be disabled. A timestamped backup will be retained.")
+        typer.echo("WARNING: this will disable the existing operator login.")
+    try:
+        confirmation = typer.prompt("Type RETIRE OPERATOR to confirm")
+    except (typer.Abort, KeyboardInterrupt, EOFError):
+        confirmation = ""
+    if confirmation != "RETIRE OPERATOR":
+        try:
+            backup.unlink()
+        except OSError:
+            typer.echo("Retirement canceled; the original is unchanged. The backup was retained.")
+            return
+        typer.echo("Retirement canceled; no changes were made.")
+        return
+    try:
+        os.replace(active, retired)
+    except OSError:
+        typer.echo("Could not retire the operator. The original credential is unchanged.", err=True)
+        typer.echo("A timestamped backup was retained.")
+        raise typer.Exit(code=2) from None
+    if json_output:
+        typer.echo(json.dumps({"status": "retired"}))
+    else:
+        typer.echo("Operator retired. A timestamped backup was retained.")
+
+
+@web_app.command("restore-operator")
+def web_restore_operator(
+    credential_file: Path | None = typer.Option(None, "--credential-file"),  # noqa: B008
+    json_output: bool = typer.Option(False, "--json"),  # noqa: B008
+) -> None:
+    """Restore a selected retired or backed-up operator credential file."""
+    try:
+        active = _operator_credential_path(credential_file)
+    except CredentialError as exc:
+        typer.echo(str(redact(str(exc))), err=True)
+        raise typer.Exit(code=2) from exc
+    candidates = _operator_archives(active)
+    if not candidates:
+        typer.echo("No retired or backup operator credential files are available.")
+        return
+    typer.echo("Available retired/backup credential files:")
+    for index, candidate in enumerate(candidates, 1):
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+            metadata = data.get("_backup_metadata", {})
+            backup_id = metadata.get("id", "unknown")
+            timestamp = metadata.get("timestamp", "unknown")
+            masked = metadata.get("email_masked", "unknown")
+            schema = metadata.get("schema_version", "legacy")
+        except (OSError, ValueError, TypeError, CredentialError):
+            backup_id, timestamp, masked, schema = (
+                "unavailable",
+                "unknown",
+                "unavailable",
+                "invalid",
+            )
+        typer.echo(f"{index}. id={backup_id} timestamp={timestamp} schema={schema} email={masked}")
+    choice = typer.prompt("Select a file number")
+    try:
+        selected_index = int(choice) - 1
+        selected = candidates[selected_index]
+    except (ValueError, IndexError):
+        typer.echo("Invalid selection. No changes were made.", err=True)
+        raise typer.Exit(code=2) from None
+    if selected.parent != active.parent or selected.is_symlink() or not selected.is_file():
+        typer.echo("Selected credential file is unavailable. No changes were made.", err=True)
+        raise typer.Exit(code=2)
+    if not json_output:
+        typer.echo("Selected credential backup will replace the active operator record.")
+    try:
+        confirmation = typer.prompt("Type RESTORE OPERATOR to confirm")
+    except (typer.Abort, KeyboardInterrupt, EOFError):
+        confirmation = ""
+    if confirmation != "RESTORE OPERATOR":
+        typer.echo("Restore canceled; no changes were made.")
+        return
+
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".operator-restore-", dir=active.parent)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    current_backup: Path | None = None
+    try:
+        restored = json.loads(selected.read_text(encoding="utf-8"))
+        restored.pop("_backup_metadata", None)
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(restored, stream, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            temporary.chmod(0o600)
+        except OSError:
+            pass
+        if active.exists() or active.is_symlink():
+            if not active.is_file() or active.is_symlink():
+                raise OSError("Active credential destination is not a regular file.")
+            current_backup = _backup_operator_file(active)
+        else:
+            current_backup = None
+        os.replace(temporary, active)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        typer.echo(
+            "Could not safely restore the operator credential. No replacement was made.", err=True
+        )
+        if current_backup is not None:
+            typer.echo("A backup of the current credential was retained.")
+        raise typer.Exit(code=2) from None
+    if json_output:
+        typer.echo(
+            json.dumps({"status": "restored", "current_backup_created": current_backup is not None})
+        )
+    else:
+        typer.echo("Operator credential restored. Any replaced credential was backed up.")
 
 
 @web_app.command("serve")
@@ -114,11 +440,8 @@ def web_serve(
     try:
         credentials = _operator_credential_path(credential_file)
     except CredentialError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=2) from exc
-    if not credentials.is_file():
-        typer.echo("No operator account. Run `chinescan web bootstrap` first.", err=True)
-        raise typer.Exit(code=2)
     from chinescan.web.app import FRONTEND_DIST
 
     project_config = projects_file or Path.home() / ".config" / "chinescan" / "projects.toml"
@@ -172,7 +495,7 @@ def _settings() -> Settings:
     try:
         return load_settings(_cli_config_path, cli_overrides=options)
     except ConfigurationError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=exc.exit_code) from exc
 
 
@@ -188,7 +511,7 @@ def config_init(
     try:
         created = init_config(path)
     except ConfigurationError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=exc.exit_code) from exc
     typer.echo(f"Created configuration: {created}")
 
@@ -202,7 +525,7 @@ def config_validate(
     try:
         validate_config(path)
     except ConfigurationError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=exc.exit_code) from exc
     typer.echo("Configuration is valid.")
 
@@ -286,7 +609,7 @@ def code_scan(
     try:
         result = CodeScanService(scanners, repository).scan(target)
     except ScannerError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=1) from exc
     finally:
         repository.close()
@@ -299,7 +622,7 @@ def code_scan(
                 report_repository, result.scan_id, settings.reports_dir
             )
         except ReportStoreError as exc:
-            typer.echo(f"Warning: {exc}", err=True)
+            typer.echo(f"Warning: {redact(str(exc))}", err=True)
         finally:
             report_repository.close()
 
@@ -372,7 +695,7 @@ def report(
         scan, findings = scan_data(repository, scan_id)
         content = render_report(scan, findings, output_format)
     except ReportingError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=2) from exc
     finally:
         repository.close()
@@ -393,7 +716,7 @@ def compare_scans(
         _, baseline = scan_data(repository, baseline_scan_id)
         _, current = scan_data(repository, current_scan_id)
     except ReportingError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=2) from exc
     finally:
         repository.close()
@@ -461,7 +784,7 @@ def logs_ingest(
     try:
         result = LogAnalysisService(repository).analyze(target, rules_path=rules, ioc_path=ioc_file)
     except LogIngestionError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=2) from exc
     finally:
         repository.close()
@@ -498,7 +821,7 @@ def malware_analyze(
     try:
         result = analyze_file(sample)
     except AnalysisError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=2) from exc
 
     engines: list[EngineResult] = []
@@ -521,7 +844,7 @@ def malware_analyze(
         for engine in engines:
             typer.echo(f"{engine.engine}: {len(engine.matches)} match(es)")
             if engine.warning:
-                typer.echo(f"{engine.engine} warning: {engine.warning}", err=True)
+                typer.echo(f"{engine.engine} warning: {redact(engine.warning)}", err=True)
     if any(engine.warning for engine in engines):
         raise typer.Exit(code=1)
 
@@ -561,7 +884,7 @@ def domain_assess(
             authorization_file=authorization_file,
         )
     except AuthorizationError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=2) from exc
     try:
         probe_settings = ProbeSettings(
@@ -570,7 +893,7 @@ def domain_assess(
             request_interval_seconds=request_interval_seconds,
         )
     except ValueError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=2) from exc
     scan_options: dict[str, str | int | float | bool] = probe_settings.as_dict()
     repository = SQLiteRepository(_settings().database_path)
@@ -591,7 +914,7 @@ def domain_assess(
         typer.echo(f"HTTP status: {result.probe.http_status or 'unavailable'}")
         typer.echo(f"Candidate findings: {len(result.findings)}")
         for error in result.probe.errors:
-            typer.echo(error, err=True)
+            typer.echo(str(redact(error)), err=True)
     if result.status != "complete":
         raise typer.Exit(code=1)
 
@@ -604,7 +927,7 @@ db_app = typer.Typer(help="Create, verify, and restore local SQLite backups.")
 
 
 def _recovery_error(exc: RecoveryError) -> None:
-    typer.echo(str(exc), err=True)
+    typer.echo(str(redact(str(exc))), err=True)
     raise typer.Exit(code=exc.exit_code) from exc
 
 
@@ -665,7 +988,9 @@ def database_verify_backup(
         state = "verified" if result.verified else "verification incomplete"
         typer.echo(f"Backup {result.backup_id or 'unknown'}: {state}")
         if result.structural_errors:
-            typer.echo(f"Structural errors: {', '.join(result.structural_errors)}", err=True)
+            typer.echo(
+                f"Structural errors: {redact(', '.join(result.structural_errors))}", err=True
+            )
         if result.unsupported_schema:
             typer.echo(f"Unsupported schema: {result.unsupported_schema}", err=True)
         if result.application_issues:
@@ -763,7 +1088,7 @@ def _case_storage_error(exc: Exception) -> None:
 
 
 def _case_workflow_error(exc: CaseWorkflowError) -> None:
-    typer.echo(str(exc), err=True)
+    typer.echo(str(redact(str(exc))), err=True)
     raise typer.Exit(code=exc.exit_code) from exc
 
 
@@ -813,13 +1138,13 @@ def case_show(
     finally:
         repository.close()
     if output_format == "json":
-        typer.echo(json.dumps(redact(case.model_dump(mode="json")), sort_keys=True, indent=2))
+        typer.echo(json.dumps(case.model_dump(mode="json"), sort_keys=True, indent=2))
     else:
-        typer.echo(f"Case {case.case_id}: {redact(case.title)}")
+        typer.echo(f"Case {case.case_id}: {case.title}")
         typer.echo(f"Status: {case.status.value}; severity: {case.severity.value}")
         typer.echo(f"Linked records: {len(context.links)}; notes: {len(case.notes)}")
         if case.description:
-            typer.echo(str(redact(case.description)))
+            typer.echo(case.description)
     _case_warnings(context.warnings)
 
 
@@ -896,7 +1221,7 @@ def case_note_list(
         _case_storage_error(exc)
     finally:
         repository.close()
-    notes = redact([note.model_dump(mode="json") for note in case.notes])
+    notes = [note.model_dump(mode="json") for note in case.notes]
     if output_format == "json":
         typer.echo(json.dumps(notes, sort_keys=True, indent=2))
     else:
@@ -927,15 +1252,13 @@ def case_timeline(
         repository.close()
     if output_format == "json":
         typer.echo(
-            json.dumps(
-                redact([item.model_dump(mode="json") for item in items]), sort_keys=True, indent=2
-            )
+            json.dumps([item.model_dump(mode="json") for item in items], sort_keys=True, indent=2)
         )
     else:
         for item in items:
             timestamp = item.event_occurred_at or item.case_activity_at
             shown_time = timestamp.isoformat() if timestamp else "time unavailable"
-            typer.echo(f"{shown_time} [{item.category}] {redact(item.description)}")
+            typer.echo(f"{shown_time} [{item.category}] {item.description}")
     _case_warnings(warnings)
 
 
@@ -956,7 +1279,7 @@ def case_export(
     try:
         content = render_case_report(repository, case_id, output_format)
     except (CaseWorkflowError, ReportingError) as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=2) from exc
     except (SQLAlchemyError, StorageError, OSError) as exc:
         _case_storage_error(exc)

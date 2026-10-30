@@ -3,6 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
+  workers: 1,
   retries: 0,
   reporter: 'list',
   outputDir: './test-results',
@@ -17,6 +18,11 @@ export default defineConfig({
   },
   projects: [
     { name: 'chromium-production', testMatch: 'dashboard.spec.ts' },
+    {
+      name: 'chromium-operator-recovery',
+      testMatch: 'operator-recovery.spec.ts',
+      use: { ...devices['Desktop Chrome'], trace: 'off', screenshot: 'off' },
+    },
     { name: 'chromium-session-expiry', testMatch: 'session-expiry.spec.ts' },
   ],
 });
