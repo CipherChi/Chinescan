@@ -15,7 +15,7 @@ from chinescan.web.app import create_app
 
 def test_projects_cli_add_and_api_list_share_core_state(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "approved"
-    root.mkdir()
+    (root / "logs").mkdir(parents=True)
     private = tmp_path / "private"
     private.mkdir()
     database = private / "records.sqlite3"
@@ -38,6 +38,23 @@ def test_projects_cli_add_and_api_list_share_core_state(tmp_path: Path, monkeypa
     )
     assert cli_result.exit_code == 0, cli_result.stderr
     cli_project = json.loads(cli_result.stdout)
+    cli_location_result = CliRunner().invoke(
+        cli_app,
+        [
+            "projects",
+            "logs",
+            "add",
+            "--project",
+            cli_project["project_id"],
+            "--name",
+            "Application logs",
+            "--path",
+            str(root / "logs"),
+            "--json",
+        ],
+    )
+    assert cli_location_result.exit_code == 0, cli_location_result.stderr
+    cli_location = json.loads(cli_location_result.stdout)
 
     credential = private / "operator.json"
     create_operator(credential, "parity@example.test", "projects-parity-password-123")
@@ -60,5 +77,25 @@ def test_projects_cli_add_and_api_list_share_core_state(tmp_path: Path, monkeypa
         next(item for item in api_items if item["project_id"] == cli_project["project_id"])
         == cli_project
     )
+    api_project = client.get(f"/api/projects/{cli_project['project_id']}").json()
+    assert api_project["log_locations"] == [cli_location]
     assert str(root) not in cli_result.stdout
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    denied_add = CliRunner().invoke(
+        cli_app,
+        [
+            "projects",
+            "logs",
+            "add",
+            "--project",
+            cli_project["project_id"],
+            "--name",
+            "Denied logs",
+            "--path",
+            str(outside),
+        ],
+    )
+    assert denied_add.exit_code == 2
+    assert str(outside) not in denied_add.stdout + denied_add.stderr
     client.close()

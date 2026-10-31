@@ -488,6 +488,18 @@ class FilesystemBrowserService:
             items.append({"directory_id": identifier, "name": label, "selectable": True})
         return {"items": items}
 
+    def project_root_view(self, session: str, root: Path) -> dict[str, str]:
+        """Issue a project scoped picker root without exposing the internal path."""
+        decision = self._decision(root, root)
+        if not decision.allowed or decision.path is None or not decision.path.is_dir():
+            raise ValueError("directory_unavailable")
+        return {
+            "directory_id": self._issue(
+                session, "project_directory", decision.path, decision.path, "Project folder"
+            ),
+            "name": "Project folder",
+        }
+
     def list_view(
         self,
         session: str,

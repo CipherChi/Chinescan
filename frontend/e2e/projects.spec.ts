@@ -91,3 +91,45 @@ test('project picker explains the valid empty allowed-roots state', async ({ pag
   await expect(page.getByRole('heading', { name: 'No allowed roots' })).toBeVisible();
   await expect(page.getByText("allowed_roots = ['C:\\src']")).toBeVisible();
 });
+
+test('project log suggestions and analysis work twice and removal preserves files', async ({ page }) => {
+  const fixture = fixtures().standard;
+  const projectFolder = process.env.CHINESCAN_BROWSER_PROJECT_FIXTURE;
+  expect(projectFolder).toBeTruthy();
+  const originalFolderHash = await folderHash(projectFolder!);
+  await signIn(page, fixture);
+
+  for (let run = 1; run <= 2; run += 1) {
+    await page.getByRole('button', { name: 'Projects', exact: true }).click();
+    await page.getByRole('button', { name: 'Add project' }).click();
+    await page.getByRole('button', { name: 'Approved folder 1' }).first().click();
+    await page.getByRole('button', { name: 'Select this folder' }).first().click();
+    await page.getByLabel('Project name').fill(`E2E log project ${run}`);
+    await page.getByRole('button', { name: 'Add project' }).last().click();
+    await expect(page.getByRole('heading', { name: `E2E log project ${run}` })).toBeVisible();
+    await capture(page, `project-log-locations-${run}.png`);
+
+    await page.getByRole('button', { name: 'Suggest locations' }).click();
+    const suggestions = page.getByRole('region', { name: 'Log location suggestions' });
+      const logsSuggestion = suggestions.getByRole('listitem').filter({ hasText: /^logs\s*Confirm$/ });
+      await expect(logsSuggestion).toBeVisible();
+    await capture(page, `project-log-suggestions-${run}.png`);
+      await logsSuggestion.getByRole('button', { name: 'Confirm' }).click();
+    await expect(page.getByRole('checkbox', { name: 'logs' })).toBeVisible();
+    await page.getByRole('button', { name: 'Analyze logs' }).click();
+    await expect(page.getByRole('status')).toContainText(/Log analysis succeeded|Log analysis partial/);
+    await expect(page.getByText('Repeated authentication failures')).toBeVisible({ timeout: 60_000 });
+    await capture(page, `project-log-alerts-${run}.png`);
+
+    const handleRemoveDialog = async (dialog: import('@playwright/test').Dialog) => {
+      if (dialog.type() === 'confirm') await dialog.accept();
+      else await dialog.accept('logs');
+    };
+    page.on('dialog', handleRemoveDialog);
+    await page.getByRole('button', { name: 'Remove', exact: true }).click();
+    page.off('dialog', handleRemoveDialog);
+    await expect(page.getByText('No log locations linked yet.')).toBeVisible();
+    expect(await folderHash(projectFolder!)).toBe(originalFolderHash);
+    await page.getByRole('button', { name: '← All projects' }).click();
+  }
+});

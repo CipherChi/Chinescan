@@ -30,6 +30,7 @@ from chinescan.core.cases import (
 )
 from chinescan.core.config.settings import Settings
 from chinescan.core.fs_policy import FilesystemBrowserService, policy_paths
+from chinescan.core.log_locations import LogLocationService
 from chinescan.core.logging.redaction import redact
 from chinescan.core.logging.structured import configure_logging
 from chinescan.core.models.common import Confidence, FindingCategory, ScanVerdict, Severity
@@ -236,6 +237,29 @@ class LogJobCreateRequest(BaseModel):
     source_id: str = Field(min_length=1, max_length=80)
 
 
+class ProjectLogLocationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    directory_id: str = Field(min_length=32, max_length=128)
+    scope: Literal["project", "external"] = "project"
+
+
+class ProjectLogLocationRemoveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: str = Field(min_length=1, max_length=120)
+
+
+class ProjectLogJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    location_ids: list[str] | None = Field(default=None, max_length=20)
+
+
+class LogSuggestionConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    suggestion_id: str = Field(min_length=16, max_length=128)
+    name: str = Field(min_length=1, max_length=120)
+
+
 class MalwareJobCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     registry_id: str | None = Field(default=None, min_length=1, max_length=80)
@@ -339,6 +363,10 @@ class LogJobResponse(BaseModel):
     error_count: int
     error: str | None
     diagnostics: list[str] = Field(default_factory=list)
+    project_id: str | None = None
+    location_ids: list[str] = Field(default_factory=list)
+    skipped_counts: dict[str, int] = Field(default_factory=dict)
+    error_code: str | None = None
 
 
 class LogJobPageResponse(BaseModel):
@@ -445,7 +473,6 @@ def create_app(
             else Path.home() / ".config" / "chinescan" / "log-sources.toml",
         ],
     )
-    log_jobs = LogJobManager(repository, db_lock, log_registry)
     malware_jobs: MalwareDashboardManager | None = None
     malware_diagnostic = (
         "Execution unavailable: configure managed storage and an operator registry."
@@ -466,6 +493,10 @@ def create_app(
         hard_denied=hard_denied,
         soft_denied=soft_denied,
         allow_soft_denied=active_settings.allow_soft_denied,
+    )
+    log_location_service = LogLocationService(repository, project_service)
+    log_jobs = LogJobManager(
+        repository, db_lock, log_registry, project_locations=log_location_service
     )
     jobs = CodeJobManager(
         repository,
@@ -533,6 +564,7 @@ def create_app(
     application.state.repository = repository
     application.state.project_registry = registry
     application.state.project_service = project_service
+    application.state.log_location_service = log_location_service
     application.state.log_source_registry = log_registry
     application.state.log_job_manager = log_jobs
     application.state.malware_job_manager = malware_jobs
@@ -844,6 +876,171 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail={"code": exc.code, "message": str(exc)}
             ) from exc
+
+    @application.get("/api/projects/{project_id}/browse")
+    def browse_project_directory(
+        project_id: str,
+        request: Request,
+        directory_id: Annotated[str | None, Query(min_length=32, max_length=128)] = None,
+        session: Session = Depends(current_session),  # noqa: B008
+        cursor: Annotated[str | None, Query(max_length=128)] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    ) -> dict[str, Any]:
+        if not fs_browse_throttle.allowed("fs:" + (request.client.host if request.client else "")):
+            raise HTTPException(status_code=429, detail="Browse rate limit reached; retry shortly.")
+        try:
+            if directory_id is None:
+                _, root = project_service.resolve(project_id)
+                return fs_browser.project_root_view(session.csrf_token, root)
+            selection = fs_browser.resolve_selection(
+                session.csrf_token, "project_directory", directory_id
+            )
+            _, root = project_service.resolve(project_id)
+            try:
+                selection.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("directory_unavailable") from exc
+            return fs_browser.list_view(
+                session.csrf_token, "project_directory", directory_id, cursor=cursor, limit=limit
+            )
+        except (ProjectError, ValueError) as exc:
+            raise HTTPException(
+                status_code=404, detail="Directory selection is unavailable."
+            ) from exc
+
+    @application.get("/api/projects/{project_id}/log-locations")
+    def list_project_log_locations(
+        project_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> list[dict[str, Any]]:  # noqa: B008
+        try:
+            return log_location_service.list(project_id)
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=404, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+
+    @application.post("/api/projects/{project_id}/log-locations", status_code=201)
+    def add_project_log_location(
+        project_id: str,
+        payload: ProjectLogLocationRequest,
+        request: Request,
+        session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:  # noqa: B008
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            capability: Literal["project_directory", "log_location"] = (
+                "project_directory" if payload.scope == "project" else "log_location"
+            )
+            selected = fs_browser.resolve_selection(
+                session.csrf_token, capability, payload.directory_id
+            )
+            return log_location_service.add(project_id, payload.name, selected, payload.scope)
+        except (ProjectError, ValueError) as exc:
+            code = exc.code if isinstance(exc, ProjectError) else "directory_unavailable"
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": code,
+                    "message": str(exc)
+                    if isinstance(exc, ProjectError)
+                    else "The selected folder is unavailable.",
+                },
+            ) from exc
+
+    @application.delete("/api/projects/{project_id}/log-locations/{location_id}")
+    def remove_project_log_location(
+        project_id: str,
+        location_id: str,
+        payload: ProjectLogLocationRemoveRequest,
+        request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, str]:  # noqa: B008
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            location = next(
+                item
+                for item in log_location_service.list(project_id)
+                if item["location_id"] == location_id
+            )
+            if payload.confirmation != location["name"]:
+                raise ProjectError(
+                    "confirmation_mismatch",
+                    "Type the log location name exactly to confirm removal.",
+                )
+            log_location_service.remove(project_id, location_id)
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=409 if exc.code == "confirmation_mismatch" else 404,
+                detail={"code": exc.code, "message": str(exc)},
+            ) from exc
+        except StopIteration as exc:
+            raise HTTPException(status_code=404, detail="Log location not found.") from exc
+        return {"status": "removed"}
+
+    @application.post("/api/projects/{project_id}/log-suggestions")
+    def project_log_suggestions(
+        project_id: str,
+        request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:  # noqa: B008
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            return log_location_service.suggestions(project_id, _session.csrf_token)
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=404, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+
+    @application.post("/api/projects/{project_id}/log-suggestions/confirm", status_code=201)
+    def confirm_project_log_suggestion(
+        project_id: str,
+        payload: LogSuggestionConfirmRequest,
+        request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:  # noqa: B008
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            return log_location_service.confirm(
+                project_id, payload.suggestion_id, payload.name, _session.csrf_token
+            )
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=422, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+
+    @application.post(
+        "/api/projects/{project_id}/log-jobs",
+        response_model=LogJobResponse,
+        status_code=202,
+    )
+    def create_project_log_job(
+        project_id: str,
+        payload: ProjectLogJobRequest,
+        request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("projects:" + client_ip):
+            raise HTTPException(status_code=429, detail="Project operation rate limit reached.")
+        try:
+            return log_jobs.submit_project(project_id, payload.location_ids)
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=422, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+        except LogSourceError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OverflowError as exc:
+            raise HTTPException(status_code=429, detail="The log analysis queue is full.") from exc
 
     @application.post("/api/projects", status_code=201)
     def add_project(

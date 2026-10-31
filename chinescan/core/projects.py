@@ -284,6 +284,16 @@ class ProjectService:
         ]
         scans.sort(key=lambda row: str(row.get("started_at", "")), reverse=True)
         scan_ids = {str(row.get("scan_id")) for row in scans}
+        from chinescan.core.models.investigation import Alert, Event, TimelineEntry
+
+        alert_ids = [identifier for scan in scans for identifier in scan.get("alert_ids", [])]
+        event_ids = [identifier for scan in scans for identifier in scan.get("event_ids", [])]
+        timeline_ids = [
+            identifier for scan in scans for identifier in scan.get("timeline_entry_ids", [])
+        ]
+        alerts = self.repository.get_many("alert", alert_ids)
+        events = self.repository.get_many("event", event_ids)
+        timeline_entries = self.repository.get_many("timeline_entry", timeline_ids)
         findings = [
             row
             for row in self.repository.list_records("finding")
@@ -309,6 +319,28 @@ class ProjectService:
             "findings_count": len(findings),
             "findings": [self._safe_finding(row) for row in findings[:100]],
             "linked_cases": [self._safe_case(row) for row in cases[:50]],
+            "log_locations": [
+                {
+                    key: location[key]
+                    for key in ("location_id", "project_id", "name", "scope", "created_at")
+                }
+                for location in item.get("log_locations", [])
+            ],
+            "log_alerts": [
+                Alert.model_validate(alerts[item]).model_dump(mode="json")
+                for item in alert_ids
+                if item in alerts
+            ][:100],
+            "log_events": [
+                Event.model_validate(events[item]).model_dump(mode="json", exclude={"raw_ref"})
+                for item in event_ids
+                if item in events
+            ][:100],
+            "log_timeline": [
+                TimelineEntry.model_validate(timeline_entries[item]).model_dump(mode="json")
+                for item in timeline_ids
+                if item in timeline_entries
+            ][:100],
         }
 
     def remove(self, project_id: str, confirmation: str) -> None:

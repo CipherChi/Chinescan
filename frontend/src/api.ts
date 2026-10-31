@@ -1,4 +1,4 @@
-import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogSourceRegistryStatus, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample, ProjectDetail, ProjectSummary, FsDirectory, FsPage } from './types';
+import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogSourceRegistryStatus, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample, ProjectDetail, ProjectSummary, ProjectLogLocation, ProjectLogSuggestion, ProjectLogJob, FsDirectory, FsPage } from './types';
 
 let csrfToken = '';
 export function setCsrfToken(token: string) { csrfToken = token; }
@@ -62,6 +62,13 @@ export const api = {
   project: (id: string) => request<ProjectDetail>(`/api/projects/${encodeURIComponent(id)}`),
   addProject: (name: string, directory_id: string) => request<ProjectSummary>('/api/projects', { method: 'POST', body: JSON.stringify({ name, directory_id }) }),
   removeProject: (id: string, confirmation: string) => request<{ status: string }>(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ confirmation }) }),
+  projectBrowse: (id: string, directoryId?: string) => request<{ directory_id: string; name: string; selectable?: boolean; breadcrumbs?: FsDirectory[]; items?: FsDirectory[]; next_cursor?: string | null; truncated?: boolean }>(`/api/projects/${encodeURIComponent(id)}/browse${directoryId ? `?directory_id=${encodeURIComponent(directoryId)}` : ''}`),
+  projectLogLocations: (id: string) => request<ProjectLogLocation[]>(`/api/projects/${encodeURIComponent(id)}/log-locations`),
+  addProjectLogLocation: (id: string, name: string, directory_id: string, scope: 'project' | 'external' = 'project') => request<ProjectLogLocation>(`/api/projects/${encodeURIComponent(id)}/log-locations`, { method: 'POST', body: JSON.stringify({ name, directory_id, scope }) }),
+  removeProjectLogLocation: (id: string, location: string, confirmation: string) => request<{ status: string }>(`/api/projects/${encodeURIComponent(id)}/log-locations/${encodeURIComponent(location)}`, { method: 'DELETE', body: JSON.stringify({ confirmation }) }),
+  projectLogSuggestions: (id: string) => request<{ items: ProjectLogSuggestion[]; visited: number; partial: boolean }>(`/api/projects/${encodeURIComponent(id)}/log-suggestions`, { method: 'POST', body: '{}' }),
+  confirmProjectLogSuggestion: (id: string, suggestion_id: string, name: string) => request<ProjectLogLocation>(`/api/projects/${encodeURIComponent(id)}/log-suggestions/confirm`, { method: 'POST', body: JSON.stringify({ suggestion_id, name }) }),
+  startProjectLogJob: (id: string, location_ids?: string[]) => request<ProjectLogJob>(`/api/projects/${encodeURIComponent(id)}/log-jobs`, { method: 'POST', body: JSON.stringify({ location_ids }) }),
   startProjectCodeJob: (id: string) => request<CodeJob>(`/api/projects/${encodeURIComponent(id)}/code-jobs`, { method: 'POST', body: '{}' }),
   codeJobs: () => request<Page<CodeJob>>('/api/code/jobs?limit=50&offset=0'),
   codeJob: (id: string) => request<CodeJob>(`/api/code/jobs/${encodeURIComponent(id)}`),
@@ -76,6 +83,7 @@ export const api = {
   logSources: () => request<LogSource[]>('/api/log/sources'),
   logSourcesStatus: () => request<LogSourceRegistryStatus>('/api/log/sources/status'),
   logJobs: () => request<Page<LogJob>>('/api/log/jobs?limit=50&offset=0'),
+  logJob: (id: string) => request<LogJob>(`/api/log/jobs/${encodeURIComponent(id)}`),
   startLogJob: (source_id: string) => request<LogJob>('/api/log/jobs', { method: 'POST', body: JSON.stringify({ source_id }) }),
   logAlerts: (scan: string, offset = 0, severity = '') => { const query = new URLSearchParams({ limit: '20', offset: String(offset) }); if (severity) query.set('severity', severity); return request<Page<LogAlert>>(`/api/log/analyses/${encodeURIComponent(scan)}/alerts?${query}`); },
   logAlert: (scan: string, id: string) => request<LogAlert>(`/api/log/analyses/${encodeURIComponent(scan)}/alerts/${encodeURIComponent(id)}`),
