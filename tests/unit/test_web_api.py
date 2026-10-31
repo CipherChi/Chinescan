@@ -818,12 +818,11 @@ def test_malware_api_fail_closed_and_redacted_case_linking(tmp_path, request):
         capability = live.get("/api/malware/capability").json()
         if os.name != "nt":
             assert capability["execution_available"] is False
-            assert (
-                live.post(
-                    "/api/malware/jobs", json={"registry_id": "fixture"}, headers=headers
-                ).status_code
-                == 503
+            deprecated = live.post(
+                "/api/malware/jobs", json={"registry_id": "fixture"}, headers=headers
             )
+            assert deprecated.status_code == 410
+            assert deprecated.json()["detail"]["code"] == "sample_workflow_deprecated"
         viewed = live.get("/api/malware/analyses/analysis-1")
         assert viewed.status_code == 200
         assert "internal-key-never-disclose" not in viewed.text
