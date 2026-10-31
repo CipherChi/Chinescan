@@ -1,4 +1,4 @@
-import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogSourceRegistryStatus, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample, ProjectDetail, ProjectSummary, ProjectLogLocation, ProjectLogSuggestion, ProjectLogJob, FsDirectory, FsPage } from './types';
+import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogSourceRegistryStatus, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample, ProjectDetail, ProjectSummary, ProjectLogLocation, ProjectLogSuggestion, ProjectLogJob, ProjectMalwareJob, MalwareHostHint, FsDirectory, FsPage } from './types';
 
 let csrfToken = '';
 export function setCsrfToken(token: string) { csrfToken = token; }
@@ -69,6 +69,10 @@ export const api = {
   projectLogSuggestions: (id: string) => request<{ items: ProjectLogSuggestion[]; visited: number; partial: boolean }>(`/api/projects/${encodeURIComponent(id)}/log-suggestions`, { method: 'POST', body: '{}' }),
   confirmProjectLogSuggestion: (id: string, suggestion_id: string, name: string) => request<ProjectLogLocation>(`/api/projects/${encodeURIComponent(id)}/log-suggestions/confirm`, { method: 'POST', body: JSON.stringify({ suggestion_id, name }) }),
   startProjectLogJob: (id: string, location_ids?: string[]) => request<ProjectLogJob>(`/api/projects/${encodeURIComponent(id)}/log-jobs`, { method: 'POST', body: JSON.stringify({ location_ids }) }),
+  malwareHostHint: () => request<MalwareHostHint>('/api/malware/host-hint'),
+  acknowledgeProjectMalwareRisk: (projectId: string) => request<{ token: string; expires_at: string }>('/api/malware/acknowledgements', { method: 'POST', body: JSON.stringify({ project_id: projectId, confirmed: true }) }),
+  startProjectMalwareJob: (projectId: string, acknowledgement_token: string) => request<ProjectMalwareJob>(`/api/projects/${encodeURIComponent(projectId)}/malware-jobs`, { method: 'POST', body: JSON.stringify({ acknowledgement_token, profile: 'builtin_static' }) }),
+  projectMalwareJob: (projectId: string, jobId: string) => request<ProjectMalwareJob>(`/api/projects/${encodeURIComponent(projectId)}/malware-jobs/${encodeURIComponent(jobId)}`),
   startProjectCodeJob: (id: string) => request<CodeJob>(`/api/projects/${encodeURIComponent(id)}/code-jobs`, { method: 'POST', body: '{}' }),
   codeJobs: () => request<Page<CodeJob>>('/api/code/jobs?limit=50&offset=0'),
   codeJob: (id: string) => request<CodeJob>(`/api/code/jobs/${encodeURIComponent(id)}`),
