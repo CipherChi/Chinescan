@@ -115,6 +115,16 @@ class SQLiteRepository(Repository):
                     )
                 )
 
+    def delete(self, record_type: str, record_id: str) -> None:
+        """Delete one explicitly named record without touching related records."""
+        with self.engine.begin() as connection:
+            connection.execute(
+                records.delete().where(
+                    records.c.record_type == record_type,
+                    records.c.record_id == record_id,
+                )
+            )
+
     def save_many(self, items: list[tuple[str, str, dict[str, Any]]]) -> None:
         """Atomically upsert a bounded set of metadata records in one SQLite transaction."""
         if not 1 <= len(items) <= 100:

@@ -12,7 +12,7 @@ ChineScan helps operators collect and review leads from local assessment workflo
 - Optional finding evidence grades: `confirmed_artifact`, `pattern_match`, `reference_only`, and `context_only`. Evidence grade is separate from confidence; existing findings may omit a grade.
 - Code-scan coverage accounting records examined files and coverage gaps. Verdicts are `leads_found`, `no_matches_with_gaps`, `no_matches_in_scope`, and `scan_failed`.
 - Code scans automatically save JSON and Markdown reports. Log, malware, and domain scans do not currently auto-save JSON or Markdown reports.
-- A local authenticated web dashboard provides sign-in only. There is no sign-up or registration flow.
+- A local authenticated web dashboard supports first-operator sign-up and sign-in.
 
 ## CLI quick start
 
@@ -75,14 +75,25 @@ Log, malware, and domain scans do not currently auto-save JSON or Markdown repor
 
 ## Web dashboard sign-in
 
-Prepare local operator sign-in credentials with the CLI bootstrap command, then start the dashboard:
+Start the dashboard and create the first operator from the **Create operator account** link. The operator identity is an email address, normalized to lowercase. Passwords must be at least 12 characters and are stored as Argon2id hashes. Only one operator account is supported, so signup is disabled after the first account exists.
 
 ```powershell
-uv run chinescan web bootstrap
 uv run chinescan web serve
 ```
 
-The bootstrap command prompts for a username and password and stores local sign-in credentials outside the repository. The dashboard has sign-in only; it has no sign-up or registration flow. The server binds to `127.0.0.1` by default.
+The server binds to `127.0.0.1` by default. `uv run chinescan web bootstrap` remains available for terminal provisioning and refuses to overwrite existing credentials. To reset a forgotten password, select **Forgot password?**, then run `uv run chinescan web reset-password --email operator@example.com` in the local terminal. Enter the printed one-time token on `/reset-password` within 15 minutes. Passwords are resettable, never recoverable; reset revokes existing sessions.
+
+For a legacy account cleanup, run `uv run chinescan web recover-operator`. It makes a timestamped credential backup before prompting you to reset/migrate the account or retire it. Retiring removes only the operator credential file, leaving scans and application settings intact. A legacy username that is not already a valid email must go through this recovery flow; ChineScan does not invent an email address.
+
+To explicitly retire the active account without creating a replacement, run `uv run chinescan web retire-operator` and type `RETIRE OPERATOR` when prompted. It backs up the credential file beside the original, then renames it as retired. To restore one, run `uv run chinescan web restore-operator`, select the archive, and type `RESTORE OPERATOR`; an existing active credential is backed up before replacement. Both commands accept `--credential-file PATH` for custom locations and leave scan/application data untouched. Passwords and Argon2id hashes cannot be recovered; the backup only preserves the hash for restoring that account. After retirement, start the backend and create a new operator manually through signup or `uv run chinescan web bootstrap`.
+
+To inspect the saved email in PowerShell:
+
+```powershell
+(Get-Content "$env:USERPROFILE\.config\chinescan\operator.json" | ConvertFrom-Json).email
+```
+
+The API routes are `POST /api/auth/signup`, `POST /api/auth/forgot-password`, and `POST /api/auth/reset-password`; see [the API guide](docs/API.md). The forgot-password response is generic and never reveals whether an email is registered. Reset tokens are only displayed by the local CLI and stored as hashes.
 
 The dashboard shows recent scans, verdicts and coverage gaps, scan details, failures and warnings, and JSON/Markdown report downloads for code scans. Access to scans, cases, evidence, reports, and job controls requires authentication.
 

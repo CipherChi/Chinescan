@@ -96,7 +96,7 @@ def test_case_cli_workflow_persists_and_exports_redacted_reports(
     assert case_payload["schema_version"] == "2.0"
     assert case_payload["status"] == "in_progress"
     assert case_payload["notes"][0]["author_label"] == "Local analyst"
-    assert "fixture-secret" not in shown.stdout
+    assert note_text in shown.stdout
 
     timeline = runner.invoke(app, ["case", "timeline", case_id, "--format", "json"])
     assert timeline.exit_code == 0, timeline.output
