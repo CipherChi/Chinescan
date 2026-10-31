@@ -111,18 +111,25 @@ test('project log suggestions and analysis work twice and removal preserves file
 
     await page.getByRole('button', { name: 'Suggest locations' }).click();
     const suggestions = page.getByRole('region', { name: 'Log location suggestions' });
-    await expect(suggestions.getByText('logs', { exact: true })).toBeVisible();
+      const logsSuggestion = suggestions.getByRole('listitem').filter({ hasText: /^logs\s*Confirm$/ });
+      await expect(logsSuggestion).toBeVisible();
     await capture(page, `project-log-suggestions-${run}.png`);
-    await suggestions.getByRole('button', { name: 'Confirm' }).first().click();
+      await logsSuggestion.getByRole('button', { name: 'Confirm' }).click();
     await expect(page.getByRole('checkbox', { name: 'logs' })).toBeVisible();
     await page.getByRole('button', { name: 'Analyze logs' }).click();
+    await expect(page.getByRole('status')).toContainText(/Log analysis succeeded|Log analysis partial/);
     await expect(page.getByText('Repeated authentication failures')).toBeVisible({ timeout: 60_000 });
     await capture(page, `project-log-alerts-${run}.png`);
 
-    await page.once('dialog', (dialog) => dialog.accept());
-    await page.once('dialog', (dialog) => dialog.accept('logs'));
+    const handleRemoveDialog = async (dialog: import('@playwright/test').Dialog) => {
+      if (dialog.type() === 'confirm') await dialog.accept();
+      else await dialog.accept('logs');
+    };
+    page.on('dialog', handleRemoveDialog);
     await page.getByRole('button', { name: 'Remove', exact: true }).click();
+    page.off('dialog', handleRemoveDialog);
     await expect(page.getByText('No log locations linked yet.')).toBeVisible();
     expect(await folderHash(projectFolder!)).toBe(originalFolderHash);
+    await page.getByRole('button', { name: '← All projects' }).click();
   }
 });

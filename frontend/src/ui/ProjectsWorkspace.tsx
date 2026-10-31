@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, UnauthorizedError } from '../api';
-import type { FsDirectory, FsPage, ProjectDetail, ProjectSummary } from '../types';
+import type { FsDirectory, FsPage, LogJob, ProjectDetail, ProjectSummary } from '../types';
 
 type Props = { onUnauthorized: () => void; onOpenScan: (id: string) => void; onCreateCase: (id: string) => void };
 const pickerExample = "allowed_roots = ['C:\\src']";
@@ -125,9 +125,20 @@ function ProjectLogs({ projectId, locations, onUnauthorized, onChanged }: { proj
   const [locationName, setLocationName] = useState('');
   const [scopeMode, setScopeMode] = useState<'project' | 'external'>('project');
   const [externalRoots, setExternalRoots] = useState<Array<{ directory_id: string; name: string }>>([]);
-  const [projectJobs, setProjectJobs] = useState<Array<{ job_id: string; status: string; error: string | null; error_count: number; skipped_counts?: Record<string, number> }>>([]);
+  const [browseTruncated, setBrowseTruncated] = useState(false);
+  const [projectJobs, setProjectJobs] = useState<LogJob[]>([]);
+  const [jobAnnouncement, setJobAnnouncement] = useState('');
   const dialog = useRef<HTMLDivElement>(null);
   const hadActiveJob = useRef(false);
+  const mounted = useRef(true);
+  const pollTimer = useRef<number | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (pollTimer.current !== null) window.clearTimeout(pollTimer.current);
+    };
+  }, []);
   const locationKey = locations.map((item) => item.location_id).join('|');
   useEffect(() => { setSelected(locations.map((item) => item.location_id)); }, [locationKey]);
   useEffect(() => {
@@ -175,6 +186,8 @@ function ProjectLogs({ projectId, locations, onUnauthorized, onChanged }: { proj
       const result = await api.projectBrowse(projectId, id ?? root?.directory_id);
       setFolder(null);
       setChildren((result.items ?? []).map((item) => ({ directory_id: item.directory_id, name: item.name })));
+      setBrowseTruncated(result.truncated ?? false);
+      setError('');
     } catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Folder could not be loaded.'); }
   }
   async function openExternal() {
@@ -184,6 +197,8 @@ function ProjectLogs({ projectId, locations, onUnauthorized, onChanged }: { proj
       setExternalRoots(result.items);
       setFolder(null);
       setChildren([]);
+      setBrowseTruncated(false);
+      setError(result.items.length ? '' : 'No approved folders are available for external log locations.');
     } catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Approved folders could not be loaded.'); }
   }
   async function browseExternal(id: string) {
@@ -191,6 +206,8 @@ function ProjectLogs({ projectId, locations, onUnauthorized, onChanged }: { proj
       const result = await api.fsList('log_location', id);
       setFolder({ directory_id: result.directory_id, name: result.name });
       setChildren(result.items.map((item) => ({ directory_id: item.directory_id, name: item.name })));
+      setBrowseTruncated(result.truncated);
+      setError('');
     } catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Folder could not be loaded.'); }
   }
   async function addFolder() {
@@ -200,9 +217,48 @@ function ProjectLogs({ projectId, locations, onUnauthorized, onChanged }: { proj
   }
   async function run() {
     setRunning(true); setError('');
-    try { const job = await api.startProjectLogJob(projectId, selected); setProjectJobs((items) => [job, ...items].slice(0, 10)); }
+    try {
+      const job = await api.startProjectLogJob(projectId, selected);
+      setProjectJobs((items) => [job, ...items.filter((item) => item.job_id !== job.job_id)].slice(0, 10));
+      setJobAnnouncement('Log analysis queued.');
+      let delay = 400;
+      let current: LogJob = job;
+      let pollErrors = 0;
+      for (let attempt = 0; attempt < 12 && mounted.current; attempt += 1) {
+        await new Promise<void>((resolve) => {
+          pollTimer.current = window.setTimeout(() => { pollTimer.current = null; resolve(); }, delay);
+        });
+        if (!mounted.current) return;
+        try { current = await api.logJob(job.job_id); }
+        catch {
+          pollErrors += 1;
+          if (pollErrors >= 3) {
+            setError('Unable to confirm log analysis status. Review recent log jobs or refresh the project.');
+            setJobAnnouncement('Unable to confirm log analysis status.');
+            return;
+          }
+          delay = Math.min(delay * 2, 5000);
+          continue;
+        }
+        if (current.project_id !== projectId) {
+          setError('Unable to confirm log analysis status for this project.');
+          return;
+        }
+        pollErrors = 0;
+        setProjectJobs((items) => [current, ...items.filter((item) => item.job_id !== current.job_id)].slice(0, 10));
+        if (current.status === 'succeeded' || current.status === 'partial' || current.status === 'failed' || current.status === 'interrupted') {
+          await onChanged();
+          if (!mounted.current) return;
+          setJobAnnouncement(`Log analysis ${current.status}${current.status === 'partial' ? `; skipped ${Object.entries(current.skipped_counts ?? {}).map(([key, count]) => `${key}: ${count}`).join(', ') || current.error_count}` : ''}.`);
+          return;
+        }
+        setJobAnnouncement('Log analysis is running.');
+        delay = Math.min(delay * 2, 5000);
+      }
+      if (mounted.current) setJobAnnouncement('Log analysis is still running. Its result will appear when processing finishes.');
+    }
     catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Log analysis could not start.'); }
-    finally { setRunning(false); }
+    finally { if (mounted.current) setRunning(false); }
   }
   return <section aria-label="Log locations">
     <div className="panel-heading"><div><h3>Log locations</h3><p>Linked folders are read-only; analysis writes only to ChineScan storage.</p></div><div className="project-actions"><button className="secondary-button" onClick={() => { setBrowserOpen(true); void openFolder(); }}>Add location</button><button className="secondary-button" onClick={() => void suggest()}>Suggest locations</button></div></div>
@@ -211,8 +267,8 @@ function ProjectLogs({ projectId, locations, onUnauthorized, onChanged }: { proj
     <ul>{locations.map((item) => <li key={item.location_id}>{item.name} <span className="project-origin">{item.scope}</span> <button className="text-button" onClick={async () => { if (!window.confirm(`Remove this association? Files are never touched; scans and findings are kept. Type ${item.name} in the next prompt to confirm.`)) return; if (window.prompt(`Type ${item.name} to confirm removal.`) !== item.name) return; try { await api.removeProjectLogLocation(projectId, item.location_id, item.name); onChanged(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Location could not be removed.'); } }}>Remove</button></li>)}</ul>
     {suggestions && <section aria-label="Log location suggestions"><h4>Suggestions</h4>{suggestions.partial && <p role="status" aria-live="polite">Suggestions are partial because the directory visit limit was reached.</p>}<ul>{suggestions.items.map((item) => <li key={item.suggestion_id}>{item.label} {item.unsupported ? <span className="project-origin">Unsupported format</span> : <button className="text-button" onClick={async () => { try { await api.confirmProjectLogSuggestion(projectId, item.suggestion_id, item.label); onChanged(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Suggestion could not be confirmed.'); } }}>Confirm</button>}</li>)}</ul></section>}
     {!!locations.length && <><fieldset><legend>Locations to analyze</legend>{locations.map((item) => <label key={item.location_id}><input type="checkbox" checked={selected.includes(item.location_id)} onChange={(event) => setSelected(event.target.checked ? [...selected, item.location_id] : selected.filter((id) => id !== item.location_id))} /> {item.name}</label>)}</fieldset><button className="primary-button" disabled={!selected.length || running} onClick={() => void run()}>{running ? 'Starting…' : 'Analyze logs'}</button></>}
-    <section aria-label="Recent project log jobs"><h4>Recent log jobs</h4>{projectJobs.length ? <ul>{projectJobs.map((job) => <li key={job.job_id}>{job.status}{job.status === 'partial' && ` · skipped ${Object.entries(job.skipped_counts ?? {}).map(([key, count]) => `${key}: ${count}`).join(', ') || job.error_count}`}{job.error && ` · ${job.error}`}</li>)}</ul> : <p className="empty-copy">No project log jobs yet.</p>}</section>
-    {browserOpen && <div className="project-dialog-backdrop"><div className="project-dialog folder-picker" role="dialog" aria-modal="true" aria-labelledby="project-log-folder-title" ref={dialog}><h2 id="project-log-folder-title">Add a log folder</h2><fieldset><legend>Folder scope</legend><label><input type="radio" name="log-scope" checked={scopeMode === 'project'} onChange={() => { setScopeMode('project'); setFolder(null); setChildren([]); void openFolder(); }} /> Inside this project</label><label><input type="radio" name="log-scope" checked={scopeMode === 'external'} onChange={() => void openExternal()} /> Outside this project (approved roots)</label></fieldset>{scopeMode === 'external' && <ul aria-label="Approved external roots">{externalRoots.map((item) => <li key={item.directory_id}><button className="text-button" onClick={() => void browseExternal(item.directory_id)}>{item.name}</button><button className="secondary-button" onClick={() => setFolder(item)}>Select</button></li>)}</ul>}{folder && <p role="status">Selected: {folder.name}</p>}<ul aria-label="Folder contents">{children.map((item) => <li key={item.directory_id}><button className="text-button" onClick={() => scopeMode === 'project' ? void openFolder(item.directory_id) : void browseExternal(item.directory_id)}>{item.name}</button><button className="secondary-button" onClick={() => setFolder(item)}>Select</button></li>)}</ul><label htmlFor="project-log-name">Location name</label><input id="project-log-name" value={locationName} onChange={(event) => setLocationName(event.target.value)} maxLength={120} /><div className="project-actions"><button className="secondary-button" onClick={() => setBrowserOpen(false)}>Cancel</button><button className="primary-button" disabled={!folder || !locationName.trim()} onClick={() => void addFolder()}>Add</button></div></div></div>}
+    <p role="status" aria-live="polite">{jobAnnouncement}</p><section aria-label="Recent project log jobs"><h4>Recent log jobs</h4>{projectJobs.length ? <ul>{projectJobs.map((job) => <li key={job.job_id}>{job.status === 'failed' && job.error_code === 'location_denied' ? `Location now denied: ${job.error ?? 'The selected folder is no longer approved.'}` : job.status}{job.status === 'partial' && ` · skipped ${Object.entries(job.skipped_counts ?? {}).map(([key, count]) => `${key}: ${count}`).join(', ') || job.error_count}`}{job.error && job.error_code !== 'location_denied' && ` · ${job.error}`}</li>)}</ul> : <p className="empty-copy">No project log jobs yet.</p>}</section>
+    {browserOpen && <div className="project-dialog-backdrop"><div className="project-dialog folder-picker" role="dialog" aria-modal="true" aria-labelledby="project-log-folder-title" ref={dialog}><h2 id="project-log-folder-title">Add a log folder</h2><fieldset><legend>Folder scope</legend><label><input type="radio" name="log-scope" checked={scopeMode === 'project'} onChange={() => { setScopeMode('project'); setFolder(null); setChildren([]); void openFolder(); }} /> Inside this project</label><label><input type="radio" name="log-scope" checked={scopeMode === 'external'} onChange={() => void openExternal()} /> Outside this project (approved roots)</label></fieldset>{scopeMode === 'external' && <ul aria-label="Approved external roots">{externalRoots.map((item) => <li key={item.directory_id}><button className="text-button" onClick={() => void browseExternal(item.directory_id)}>{item.name}</button><button className="secondary-button" onClick={() => setFolder(item)}>Select</button></li>)}</ul>}{browseTruncated && <p role="status" aria-live="polite">Folder listing is truncated. Browse a narrower folder to continue.</p>}{folder && <p role="status">Selected: {folder.name}</p>}<ul aria-label="Folder contents">{children.map((item) => <li key={item.directory_id}><button className="text-button" onClick={() => scopeMode === 'project' ? void openFolder(item.directory_id) : void browseExternal(item.directory_id)}>{item.name}</button><button className="secondary-button" onClick={() => setFolder(item)}>Select</button></li>)}</ul><label htmlFor="project-log-name">Location name</label><input id="project-log-name" value={locationName} onChange={(event) => setLocationName(event.target.value)} maxLength={120} /><div className="project-actions"><button className="secondary-button" onClick={() => setBrowserOpen(false)}>Cancel</button><button className="primary-button" disabled={!folder || !locationName.trim()} onClick={() => void addFolder()}>Add</button></div></div></div>}
   </section>;
 }
 
