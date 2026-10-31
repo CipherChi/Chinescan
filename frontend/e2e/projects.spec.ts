@@ -92,6 +92,42 @@ test('project picker explains the valid empty allowed-roots state', async ({ pag
   await expect(page.getByText("allowed_roots = ['C:\\src']")).toBeVisible();
 });
 
+test('project malware acknowledgement gates scanning, shows partial findings, and cancel starts nothing', async ({ page }) => {
+  const fixture = fixtures().standard;
+  await signIn(page, fixture);
+  await page.getByRole('button', { name: 'Projects', exact: true }).click();
+  await page.getByRole('button', { name: 'Add project' }).click();
+  await page.getByRole('button', { name: 'Approved folder 1' }).first().click();
+  await page.getByRole('button', { name: 'Select this folder' }).first().click();
+  await page.getByLabel('Project name').fill('E2E malware project');
+  await page.getByRole('button', { name: 'Add project' }).last().click();
+  await expect(page.getByRole('heading', { name: 'E2E malware project' })).toBeVisible();
+
+  const startedJobs: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && /\/api\/projects\/[^/]+\/malware-jobs$/.test(request.url())) startedJobs.push(request.url());
+  });
+  await page.getByRole('button', { name: 'Scan for malware' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Before scanning this project' });
+  await expect(dialog).toBeVisible();
+  await capture(page, 'malware-modal.png');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(startedJobs).toHaveLength(0);
+
+  await page.getByRole('button', { name: 'Scan for malware' }).click();
+  const acknowledgement = page.waitForResponse((response) => response.url().endsWith('/api/malware/acknowledgements') && response.status() === 201);
+  await page.getByRole('checkbox', { name: /understand the VM and containment risk/i }).check();
+  await page.getByRole('button', { name: 'Confirm scan' }).click();
+  await acknowledgement;
+  await expect(page.getByRole('status').filter({ hasText: /Project malware scan (succeeded|partial)/ })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('list', { name: 'Project malware findings' })).toContainText(/Download Pipe Shell/i);
+  await capture(page, 'malware-project-section.png');
+  await expect(page.getByText('Partial malware scan')).toBeVisible();
+  await capture(page, 'malware-partial-banner.png');
+  expect(startedJobs).toHaveLength(1);
+});
+
 test('project log suggestions and analysis work twice and removal preserves files', async ({ page }) => {
   const fixture = fixtures().standard;
   const projectFolder = process.env.CHINESCAN_BROWSER_PROJECT_FIXTURE;
@@ -117,7 +153,7 @@ test('project log suggestions and analysis work twice and removal preserves file
       await logsSuggestion.getByRole('button', { name: 'Confirm' }).click();
     await expect(page.getByRole('checkbox', { name: 'logs' })).toBeVisible();
     await page.getByRole('button', { name: 'Analyze logs' }).click();
-    await expect(page.getByRole('status')).toContainText(/Log analysis succeeded|Log analysis partial/);
+    await expect(page.getByRole('region', { name: 'Log locations' }).getByRole('status')).toContainText(/Log analysis succeeded|Log analysis partial/);
     await expect(page.getByText('Repeated authentication failures')).toBeVisible({ timeout: 60_000 });
     await capture(page, `project-log-alerts-${run}.png`);
 

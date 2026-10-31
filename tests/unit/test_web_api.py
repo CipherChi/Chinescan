@@ -807,7 +807,13 @@ def test_malware_api_fail_closed_and_redacted_case_linking(tmp_path, request):
                 json={"registry_id": "unknown"},
                 headers=headers,
             ).status_code
-            == 422
+            == 410
+        )
+        assert (
+            live.post("/api/malware/jobs", json={"registry_id": "unknown"}, headers=headers).json()[
+                "detail"
+            ]["code"]
+            == "sample_workflow_deprecated"
         )
         capability = live.get("/api/malware/capability").json()
         if os.name != "nt":

