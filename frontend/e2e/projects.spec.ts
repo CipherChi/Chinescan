@@ -103,7 +103,7 @@ test('project log suggestions and analysis work twice and removal preserves file
     await page.getByRole('button', { name: 'Projects', exact: true }).click();
     await page.getByRole('button', { name: 'Add project' }).click();
     await page.getByRole('button', { name: 'Approved folder 1' }).first().click();
-    await page.getByRole('button', { name: 'Select this folder' }).last().click();
+    await page.getByRole('button', { name: 'Select this folder' }).first().click();
     await page.getByLabel('Project name').fill(`E2E log project ${run}`);
     await page.getByRole('button', { name: 'Add project' }).last().click();
     await expect(page.getByRole('heading', { name: `E2E log project ${run}` })).toBeVisible();
