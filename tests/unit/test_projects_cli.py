@@ -80,4 +80,22 @@ def test_projects_cli_add_and_api_list_share_core_state(tmp_path: Path, monkeypa
     api_project = client.get(f"/api/projects/{cli_project['project_id']}").json()
     assert api_project["log_locations"] == [cli_location]
     assert str(root) not in cli_result.stdout
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    denied_add = CliRunner().invoke(
+        cli_app,
+        [
+            "projects",
+            "logs",
+            "add",
+            "--project",
+            cli_project["project_id"],
+            "--name",
+            "Denied logs",
+            "--path",
+            str(outside),
+        ],
+    )
+    assert denied_add.exit_code == 2
+    assert str(outside) not in denied_add.stdout + denied_add.stderr
     client.close()

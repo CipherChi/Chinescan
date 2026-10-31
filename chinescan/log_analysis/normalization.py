@@ -9,7 +9,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from chinescan.core.logging.redaction import redact
 from chinescan.core.models.investigation import Event
 
 _ALIASES: dict[str, tuple[str, ...]] = {
@@ -197,5 +196,4 @@ def _parse_time(value: Any, fallback: datetime | None) -> datetime:
 def _safe_text(value: Any, limit: int) -> str:
     text = str(value).replace("\x00", "")[:limit]
     text = _SECRET.sub(r"\1\2[REDACTED]", text)
-    redacted = redact(text)
-    return str(redacted)
+    return text

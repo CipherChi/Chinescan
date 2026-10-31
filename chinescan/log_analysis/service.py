@@ -108,7 +108,7 @@ class LogAnalysisService:
             TimelineEntry(
                 entry_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{scan_id}:{event.event_id}")),
                 occurred_at=event.occurred_at,
-                description=str(redact(event.summary))[:500],
+                description=event.summary[:500],
                 event_id=event.event_id,
                 scan_id=scan_id,
             )
