@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -52,6 +53,118 @@ def _selection(client: TestClient) -> str:
     roots = client.get("/api/fs/roots?capability=project_directory")
     assert roots.status_code == 200
     return roots.json()["items"][0]["directory_id"]
+
+
+def test_project_log_locations_are_path_free_and_removal_keeps_files(tmp_path: Path) -> None:
+    root = tmp_path / "approved"
+    logs = root / "logs"
+    logs.mkdir(parents=True)
+    candidate = logs / "auth.jsonl"
+    candidate.write_text('{"event":"failed login"}\n', encoding="utf-8")
+    digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    _app, client, headers = _client(tmp_path, [root])
+    project_response = client.post(
+        "/api/projects", json={"name": "Logs", "directory_id": _selection(client)}, headers=headers
+    )
+    project_id = project_response.json()["project_id"]
+    initial = client.get(f"/api/projects/{project_id}/browse")
+    assert initial.status_code == 200
+    page = client.get(
+        f"/api/projects/{project_id}/browse?directory_id={initial.json()['directory_id']}"
+    )
+    logs_id = next(item["directory_id"] for item in page.json()["items"] if item["name"] == "logs")
+    added = client.post(
+        f"/api/projects/{project_id}/log-locations",
+        json={"name": "Application logs", "directory_id": logs_id},
+        headers=headers,
+    )
+    assert added.status_code == 201
+    assert str(root) not in added.text and str(logs) not in added.text
+    assert (
+        client.get(f"/api/projects/{project_id}").json()["log_locations"][0]["scope"] == "project"
+    )
+    suggestions = client.post(f"/api/projects/{project_id}/log-suggestions", headers=headers)
+    assert suggestions.status_code == 200
+    assert any(item["label"] == "logs" for item in suggestions.json()["items"])
+    removed = client.request(
+        "DELETE",
+        f"/api/projects/{project_id}/log-locations/{added.json()['location_id']}",
+        headers=headers,
+        json={"confirmation": "Application logs"},
+    )
+    assert removed.status_code == 200
+    assert hashlib.sha256(candidate.read_bytes()).hexdigest() == digest
+
+
+def test_project_logs_api_end_to_end(tmp_path: Path) -> None:
+    root = tmp_path / "approved"
+    logs = root / "logs"
+    logs.mkdir(parents=True)
+    candidate = logs / "auth.log"
+    candidate.write_text(
+        "\n".join(
+            f"Oct 25 10:{minute:02}:00 host sshd[{101 + minute - 0}]: Failed password "
+            f"for alice from 203.0.113.5 port {40001 + minute} ssh2"
+            for minute in range(5)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    app, _client_without_lifespan, _ = _client(tmp_path, [root])
+    with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50132)) as client:
+        login = client.post(
+            "/api/auth/login",
+            json={"email": "projects@example.test", "password": "project-test-password-123"},
+            headers={"Origin": "http://127.0.0.1"},
+        )
+        headers = {"Origin": "http://127.0.0.1", "X-CSRF-Token": login.json()["csrf_token"]}
+        root_id = client.get("/api/fs/roots?capability=project_directory").json()["items"][0][
+            "directory_id"
+        ]
+        project = client.post(
+            "/api/projects", json={"name": "Log fixture", "directory_id": root_id}, headers=headers
+        ).json()
+        project_id = project["project_id"]
+        suggestion_page = client.post(
+            f"/api/projects/{project_id}/log-suggestions", headers=headers
+        ).json()
+        logs_suggestion = next(item for item in suggestion_page["items"] if item["label"] == "logs")
+        linked = client.post(
+            f"/api/projects/{project_id}/log-suggestions/confirm",
+            json={"suggestion_id": logs_suggestion["suggestion_id"], "name": "logs"},
+            headers=headers,
+        ).json()
+        submitted = client.post(
+            f"/api/projects/{project_id}/log-jobs",
+            json={"location_ids": [linked["location_id"]]},
+            headers=headers,
+        )
+        assert submitted.status_code == 202
+        job_id = submitted.json()["job_id"]
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            job = client.get(f"/api/log/jobs/{job_id}").json()
+            if job["status"] in {"succeeded", "partial", "failed"}:
+                break
+            time.sleep(0.05)
+        assert job["status"] in {"succeeded", "partial"}
+        project_detail = client.get(f"/api/projects/{project_id}").json()
+        assert project_detail["log_alerts"]
+        assert project_detail["log_events"]
+        assert project_detail["log_timeline"]
+        assert project_detail["log_events"][0]["file_hashes"] == []
+        assert str(root) not in client.get(f"/api/projects/{project_id}").text
+        assert (
+            client.request(
+                "DELETE",
+                f"/api/projects/{project_id}/log-locations/{linked['location_id']}",
+                headers=headers,
+                json={"confirmation": "logs"},
+            ).status_code
+            == 200
+        )
+        assert hashlib.sha256(candidate.read_bytes()).hexdigest() == digest
 
 
 def test_project_api_create_show_remove_keeps_files_scans_findings_and_cases(

@@ -64,11 +64,31 @@ describe('projects workspace', () => {
     render(<ProjectsWorkspace onUnauthorized={vi.fn()} onOpenScan={vi.fn()} onCreateCase={vi.fn()} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Open project' }));
     expect(await screen.findByRole('status')).toHaveTextContent('max_files: 2');
+    expect(screen.getByText('No log locations linked yet.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove project' }));
     expect(screen.getByRole('dialog', { name: 'Remove Example?' })).toHaveTextContent('Files in the folder are never touched.');
     const button = within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove project record' });
     expect(button).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/Type Example to confirm/), { target: { value: 'Example' } });
     expect(button).toBeEnabled();
+  });
+
+  it('shows bounded suggestions and marks EVTX as unsupported', async () => {
+    const project = { project_id: 'p1', name: 'Example', kind: 'local', configured_by: 'ui', origin_label: 'This device', created_at: '', last_scan: null, last_scan_refs: [] };
+    const detail = { ...project, recent_jobs: [], findings_count: 0, findings: [], linked_cases: [], recent_scans: [], log_locations: [], log_alerts: [], log_events: [], log_timeline: [] };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path === '/api/projects') return reply([project]);
+      if (path === '/api/projects/p1' && init?.method !== 'POST') return reply(detail);
+      if (path === '/api/log/jobs?limit=50&offset=0') return reply({ items: [], total: 0, limit: 50, offset: 0 });
+      if (path === '/api/projects/p1/log-suggestions') return reply({ partial: true, visited: 5000, items: [{ suggestion_id: 'suggestion-123456789', label: 'archive.evtx', unsupported: true }] });
+      return reply({});
+    });
+    render(<ProjectsWorkspace onUnauthorized={vi.fn()} onOpenScan={vi.fn()} onCreateCase={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open project' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Suggest locations' }));
+    expect(await screen.findByRole('status')).toHaveTextContent(/partial/i);
+    expect(screen.getByText('Unsupported format')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
   });
 });

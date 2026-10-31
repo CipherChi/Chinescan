@@ -1,5 +1,15 @@
 # Development
 
+Project log locations are local, read-only associations. In the authenticated project detail
+page, add folders from the project tree or another approved filesystem root, review metadata-only
+suggestions, and run analysis against selected locations. CLI support is available through
+`uv run chinescan projects logs list --project PROJECT_ID --json`, `add --project PROJECT_ID
+--name NAME --path ABSOLUTE_PATH`, `suggest --project PROJECT_ID --json`, `analyze --project
+PROJECT_ID [--location LOCATION_ID] --json`, and `remove LOCATION_ID --project PROJECT_ID
+--yes`. The CLI accepts paths only for additions because browser selection IDs are short-lived
+and session-bound. Removing a location removes its association only; files, scans, and findings
+remain. EVTX is surfaced as unsupported until a bounded read-only parser is implemented.
+
 Use Python 3.12+ and `uv`:
 
 ```powershell
@@ -178,3 +188,6 @@ Login, signup, password reset, and forgot-password throttles are held in process
 ## Local environment troubleshooting
 
 Use the repository's uv-managed environment for development commands. If `uv run` reports a missing `pyvenv.cfg`, confirm `UV_PROJECT_ENVIRONMENT` and `VIRTUAL_ENV` are unset or point to this repository's `.venv`, then run `uv sync --all-groups --all-extras`. Run pytest with `--basetemp` under the operating system temporary directory so SQLite handles are not removed while the repository is in use.
+# EVTX log support
+
+EVTX files are detected by project log suggestions and shown as unsupported until a parser is available. A future parser should use a bounded, read-only implementation: accept only regular files approved by filesystem policy, cap file bytes, records, nesting, and elapsed time, parse from a bounded stream without executing embedded content, and return a partial result with skipped counts when a cap is reached. It must not upload samples or write beside the source file.

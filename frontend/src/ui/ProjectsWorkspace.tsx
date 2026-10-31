@@ -85,6 +85,10 @@ export function ProjectsWorkspace({ onUnauthorized, onOpenScan, onCreateCase }: 
         <div className="project-actions"><button className="primary-button" onClick={() => void startAssessment()}>Assess code</button>{detail.configured_by === 'ui' && <button className="secondary-button" onClick={() => { setConfirmation(''); setRemoveOpen(true); }}>Remove project</button>}</div>
       </div>
       {error && <div className="alert-error" role="alert" aria-live="assertive">{error}</div>}
+      <ProjectLogs projectId={detail.project_id} locations={detail.log_locations ?? []} onUnauthorized={onUnauthorized} onChanged={() => void openProject(detail)} />
+      <section aria-label="Project log alerts"><h3>Project log alerts</h3>{detail.log_alerts?.length ? <ul>{detail.log_alerts.map((alert) => <li key={alert.alert_id}><strong>{alert.title}</strong> · {alert.severity}</li>)}</ul> : <p className="empty-copy">No log alerts yet.</p>}</section>
+      <section aria-label="Project log events"><h3>Project log events</h3>{detail.log_events?.length ? <ul>{detail.log_events.map((event) => <li key={event.event_id}>{event.occurred_at} · {event.summary} {event.sha256} {event.file_hashes?.join(' ')}</li>)}</ul> : <p className="empty-copy">No log events yet.</p>}</section>
+      <section aria-label="Project log timeline"><h3>Project log timeline</h3>{detail.log_timeline?.length ? <ol>{detail.log_timeline.map((entry) => <li key={entry.entry_id}>{entry.occurred_at} · {entry.description}</li>)}</ol> : <p className="empty-copy">No timeline entries yet.</p>}</section>
       <section aria-label="Recent jobs"><h3>Recent jobs</h3>{detail.recent_jobs.length ? <ul className="project-job-list">{detail.recent_jobs.map((job) => <li key={job.job_id}><span>{job.status}</span><span>{job.warning ?? job.error ?? job.scan_id ?? job.job_id.slice(0, 8)}</span>{job.scan_id && <button className="text-button" onClick={() => onOpenScan(job.scan_id!)}>Open findings</button>}</li>)}</ul> : <p className="empty-copy">No assessments yet.</p>}</section>
       <section aria-label="Persisted findings"><h3>Persisted findings ({detail.findings_count})</h3>{detail.findings.length ? <ul className="project-finding-list">{detail.findings.map((finding) => <li key={finding.finding_id}><strong>{finding.title}</strong><span>{finding.severity} · {finding.location ?? 'Project file'}</span></li>)}</ul> : <p className="empty-copy">No findings have been persisted for this project.</p>}</section>
       <section aria-label="Linked cases"><h3>Linked cases</h3>{detail.linked_cases.length ? <ul>{detail.linked_cases.map((item) => <li key={item.case_id}>{item.title} · {item.status}</li>)}</ul> : <p className="empty-copy">No linked cases.</p>}</section>
@@ -107,6 +111,108 @@ export function ProjectsWorkspace({ onUnauthorized, onOpenScan, onCreateCase }: 
       {loading ? <div className="skeleton-card" aria-label="Loading projects"/> : projects.length ? <div className="table-scroll"><table><thead><tr><th>PROJECT</th><th>KIND</th><th>CONFIGURED BY</th><th>LAST SCAN</th><th>ACTIONS</th></tr></thead><tbody>{projects.map((project) => <tr key={project.project_id}><td><strong>{project.name}</strong></td><td>{project.kind}</td><td><span className={`project-origin ${project.configured_by}`}>{project.configured_by === 'file' ? 'Configured by file' : 'Added here'}</span></td><td>{project.last_scan ?? '—'}</td><td><button className="text-button" onClick={() => void openProject(project)}>Open project</button></td></tr>)}</tbody></table></div> : <div className="empty-state"><h3>No projects yet</h3><p>Add an approved local folder to begin code assessments.</p></div>}
     </div>
     {pickerOpen && <FolderPicker dialogRef={dialogRef} onClose={() => setPickerOpen(false)} onUnauthorized={onUnauthorized} onCreated={async (project) => { setPickerOpen(false); await load(); await openProject(project); }} />}
+  </section>;
+}
+
+function ProjectLogs({ projectId, locations, onUnauthorized, onChanged }: { projectId: string; locations: Array<{ location_id: string; name: string; scope: 'project' | 'external' }>; onUnauthorized: () => void; onChanged: () => void }) {
+  const [suggestions, setSuggestions] = useState<{ items: Array<{ suggestion_id: string; label: string; unsupported: boolean }>; partial: boolean } | null>(null);
+  const [selected, setSelected] = useState<string[]>(locations.map((item) => item.location_id));
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState('');
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [folder, setFolder] = useState<{ directory_id: string; name: string } | null>(null);
+  const [children, setChildren] = useState<Array<{ directory_id: string; name: string }>>([]);
+  const [locationName, setLocationName] = useState('');
+  const [scopeMode, setScopeMode] = useState<'project' | 'external'>('project');
+  const [externalRoots, setExternalRoots] = useState<Array<{ directory_id: string; name: string }>>([]);
+  const [projectJobs, setProjectJobs] = useState<Array<{ job_id: string; status: string; error: string | null; error_count: number; skipped_counts?: Record<string, number> }>>([]);
+  const dialog = useRef<HTMLDivElement>(null);
+  const hadActiveJob = useRef(false);
+  const locationKey = locations.map((item) => item.location_id).join('|');
+  useEffect(() => { setSelected(locations.map((item) => item.location_id)); }, [locationKey]);
+  useEffect(() => {
+    let active = true;
+    async function loadJobs() {
+      try {
+        const page = await api.logJobs();
+        if (active) {
+          const next = page.items.filter((job) => job.project_id === projectId).slice(0, 10);
+          const hasActive = next.some((job) => job.status === 'queued' || job.status === 'running');
+          if (hadActiveJob.current && !hasActive) onChanged();
+          hadActiveJob.current = hasActive;
+          setProjectJobs(next);
+        }
+      } catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); }
+    }
+    void loadJobs();
+    const timer = window.setInterval(() => void loadJobs(), 1800);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [projectId, onUnauthorized]);
+  useEffect(() => {
+    if (!browserOpen || !dialog.current) return;
+    const node = dialog.current;
+    const focusable = () => Array.from(node.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'));
+    focusable()[0]?.focus();
+    const trap = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setBrowserOpen(false); return; }
+      if (event.key !== 'Tab') return;
+      const items = focusable();
+      if (!items.length) return;
+      if (event.shiftKey && document.activeElement === items[0]) { event.preventDefault(); items.at(-1)?.focus(); }
+      else if (!event.shiftKey && document.activeElement === items.at(-1)) { event.preventDefault(); items[0].focus(); }
+    };
+    document.addEventListener('keydown', trap);
+    return () => document.removeEventListener('keydown', trap);
+  }, [browserOpen]);
+
+  async function suggest() {
+    try { setSuggestions(await api.projectLogSuggestions(projectId)); setError(''); }
+    catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Suggestions could not be loaded.'); }
+  }
+  async function openFolder(id?: string) {
+    try {
+      const root = id ? null : await api.projectBrowse(projectId);
+      const result = await api.projectBrowse(projectId, id ?? root?.directory_id);
+      setFolder(null);
+      setChildren((result.items ?? []).map((item) => ({ directory_id: item.directory_id, name: item.name })));
+    } catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Folder could not be loaded.'); }
+  }
+  async function openExternal() {
+    setScopeMode('external');
+    try {
+      const result = await api.fsRoots('log_location');
+      setExternalRoots(result.items);
+      setFolder(null);
+      setChildren([]);
+    } catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Approved folders could not be loaded.'); }
+  }
+  async function browseExternal(id: string) {
+    try {
+      const result = await api.fsList('log_location', id);
+      setFolder({ directory_id: result.directory_id, name: result.name });
+      setChildren(result.items.map((item) => ({ directory_id: item.directory_id, name: item.name })));
+    } catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Folder could not be loaded.'); }
+  }
+  async function addFolder() {
+    if (!folder || !locationName.trim()) return;
+    try { await api.addProjectLogLocation(projectId, locationName.trim(), folder.directory_id, scopeMode); setBrowserOpen(false); onChanged(); }
+    catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Location could not be added.'); }
+  }
+  async function run() {
+    setRunning(true); setError('');
+    try { const job = await api.startProjectLogJob(projectId, selected); setProjectJobs((items) => [job, ...items].slice(0, 10)); }
+    catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Log analysis could not start.'); }
+    finally { setRunning(false); }
+  }
+  return <section aria-label="Log locations">
+    <div className="panel-heading"><div><h3>Log locations</h3><p>Linked folders are read-only; analysis writes only to ChineScan storage.</p></div><div className="project-actions"><button className="secondary-button" onClick={() => { setBrowserOpen(true); void openFolder(); }}>Add location</button><button className="secondary-button" onClick={() => void suggest()}>Suggest locations</button></div></div>
+    {error && <p role="alert" aria-live="assertive" className="alert-error">{error}</p>}
+    {!locations.length && <p className="empty-copy">No log locations linked yet.</p>}
+    <ul>{locations.map((item) => <li key={item.location_id}>{item.name} <span className="project-origin">{item.scope}</span> <button className="text-button" onClick={async () => { if (!window.confirm(`Remove this association? Files are never touched; scans and findings are kept. Type ${item.name} in the next prompt to confirm.`)) return; if (window.prompt(`Type ${item.name} to confirm removal.`) !== item.name) return; try { await api.removeProjectLogLocation(projectId, item.location_id, item.name); onChanged(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Location could not be removed.'); } }}>Remove</button></li>)}</ul>
+    {suggestions && <section aria-label="Log location suggestions"><h4>Suggestions</h4>{suggestions.partial && <p role="status" aria-live="polite">Suggestions are partial because the directory visit limit was reached.</p>}<ul>{suggestions.items.map((item) => <li key={item.suggestion_id}>{item.label} {item.unsupported ? <span className="project-origin">Unsupported format</span> : <button className="text-button" onClick={async () => { try { await api.confirmProjectLogSuggestion(projectId, item.suggestion_id, item.label); onChanged(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Suggestion could not be confirmed.'); } }}>Confirm</button>}</li>)}</ul></section>}
+    {!!locations.length && <><fieldset><legend>Locations to analyze</legend>{locations.map((item) => <label key={item.location_id}><input type="checkbox" checked={selected.includes(item.location_id)} onChange={(event) => setSelected(event.target.checked ? [...selected, item.location_id] : selected.filter((id) => id !== item.location_id))} /> {item.name}</label>)}</fieldset><button className="primary-button" disabled={!selected.length || running} onClick={() => void run()}>{running ? 'Starting…' : 'Analyze logs'}</button></>}
+    <section aria-label="Recent project log jobs"><h4>Recent log jobs</h4>{projectJobs.length ? <ul>{projectJobs.map((job) => <li key={job.job_id}>{job.status}{job.status === 'partial' && ` · skipped ${Object.entries(job.skipped_counts ?? {}).map(([key, count]) => `${key}: ${count}`).join(', ') || job.error_count}`}{job.error && ` · ${job.error}`}</li>)}</ul> : <p className="empty-copy">No project log jobs yet.</p>}</section>
+    {browserOpen && <div className="project-dialog-backdrop"><div className="project-dialog folder-picker" role="dialog" aria-modal="true" aria-labelledby="project-log-folder-title" ref={dialog}><h2 id="project-log-folder-title">Add a log folder</h2><fieldset><legend>Folder scope</legend><label><input type="radio" name="log-scope" checked={scopeMode === 'project'} onChange={() => { setScopeMode('project'); setFolder(null); setChildren([]); void openFolder(); }} /> Inside this project</label><label><input type="radio" name="log-scope" checked={scopeMode === 'external'} onChange={() => void openExternal()} /> Outside this project (approved roots)</label></fieldset>{scopeMode === 'external' && <ul aria-label="Approved external roots">{externalRoots.map((item) => <li key={item.directory_id}><button className="text-button" onClick={() => void browseExternal(item.directory_id)}>{item.name}</button><button className="secondary-button" onClick={() => setFolder(item)}>Select</button></li>)}</ul>}{folder && <p role="status">Selected: {folder.name}</p>}<ul aria-label="Folder contents">{children.map((item) => <li key={item.directory_id}><button className="text-button" onClick={() => scopeMode === 'project' ? void openFolder(item.directory_id) : void browseExternal(item.directory_id)}>{item.name}</button><button className="secondary-button" onClick={() => setFolder(item)}>Select</button></li>)}</ul><label htmlFor="project-log-name">Location name</label><input id="project-log-name" value={locationName} onChange={(event) => setLocationName(event.target.value)} maxLength={120} /><div className="project-actions"><button className="secondary-button" onClick={() => setBrowserOpen(false)}>Cancel</button><button className="primary-button" disabled={!folder || !locationName.trim()} onClick={() => void addFolder()}>Add</button></div></div></div>}
   </section>;
 }
 

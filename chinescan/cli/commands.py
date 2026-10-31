@@ -24,6 +24,7 @@ from chinescan.core.fs_policy import (
     decide_path,
     policy_paths,
 )
+from chinescan.core.log_locations import LogLocationService
 from chinescan.core.logging.redaction import redact
 from chinescan.core.models.common import Severity
 from chinescan.core.models.investigation import CaseStatus
@@ -1377,6 +1378,8 @@ def fs_roots(json_output: bool = typer.Option(False, "--json")) -> None:
 
 
 projects_app = typer.Typer(help="Manage locally approved code projects.")
+project_logs_app = typer.Typer(help="Manage project log locations and analyze local logs.")
+projects_app.add_typer(project_logs_app, name="logs")
 
 
 def _project_service() -> ProjectService:
@@ -1496,6 +1499,151 @@ def projects_remove(
         )
     except ProjectError as exc:
         typer.echo(f"Project removal failed: {exc.code}.", err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()
+
+
+@project_logs_app.command("list")
+def project_logs_list(
+    project: str = typer.Option(..., "--project"), json_output: bool = typer.Option(False, "--json")
+) -> None:
+    service = _project_service()
+    try:
+        items = LogLocationService(service.repository, service).list(project)
+        typer.echo(
+            json.dumps(items, sort_keys=True)
+            if json_output
+            else "\n".join(
+                f"{item['name']} [{item['scope']}] {item['location_id']}" for item in items
+            )
+            or "No log locations linked."
+        )
+    except ProjectError as exc:
+        typer.echo(f"Log locations unavailable: {exc.code}.", err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()
+
+
+@project_logs_app.command("add")
+def project_logs_add(
+    project: str = typer.Option(..., "--project"),
+    name: str = typer.Option(..., "--name"),
+    path: Path | None = typer.Option(None, "--path"),  # noqa: B008
+    directory_id: str | None = typer.Option(None, "--directory-id"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    if path is None or directory_id is not None:
+        typer.echo("CLI location add requires --path; browser IDs are session-bound.", err=True)
+        raise typer.Exit(code=2)
+    service = _project_service()
+    try:
+        selected = service.resolve_path(path)
+        item = LogLocationService(service.repository, service).add_project_selection(
+            project, name, selected
+        )
+        typer.echo(
+            json.dumps(item, sort_keys=True)
+            if json_output
+            else f"Added log location {item['name']}. "
+        )
+    except ProjectError as exc:
+        typer.echo(f"Log location add failed: {exc.code}.", err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()
+
+
+@project_logs_app.command("remove")
+def project_logs_remove(
+    location_id: str = typer.Argument(...),
+    project: str = typer.Option(..., "--project"),
+    yes: bool = typer.Option(False, "--yes"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    if not yes:
+        typer.echo("Pass --yes to remove the association; files are never touched.", err=True)
+        raise typer.Exit(code=2)
+    service = _project_service()
+    try:
+        LogLocationService(service.repository, service).remove(project, location_id)
+        typer.echo(
+            json.dumps({"status": "removed"})
+            if json_output
+            else "Removed log location association; files are untouched."
+        )
+    except ProjectError as exc:
+        typer.echo(f"Log location removal failed: {exc.code}.", err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()
+
+
+@project_logs_app.command("suggest")
+def project_logs_suggest(
+    project: str = typer.Option(..., "--project"), json_output: bool = typer.Option(False, "--json")
+) -> None:
+    service = _project_service()
+    try:
+        result = LogLocationService(service.repository, service).suggestions(project)
+        typer.echo(
+            json.dumps(result, sort_keys=True)
+            if json_output
+            else "\n".join(
+                f"{row['label']}"
+                + (" [unsupported format]" if row["unsupported"] else " [confirm in dashboard]")
+                for row in result["items"]
+            )
+            or "No log location suggestions."
+        )
+    except ProjectError as exc:
+        typer.echo(f"Log suggestions failed: {exc.code}.", err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()
+
+
+@project_logs_app.command("analyze")
+def project_logs_analyze(
+    project: str = typer.Option(..., "--project"),
+    location: list[str] = typer.Option([], "--location"),  # noqa: B008
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    service = _project_service()
+    try:
+        locations = LogLocationService(service.repository, service)
+        available = locations.list(project)
+        chosen = location or [str(item["location_id"]) for item in available]
+        if not chosen:
+            raise ProjectError("no_locations", "Link at least one log location first.")
+        roots = [locations.resolve_location(project, identifier) for identifier in chosen]
+        results = [LogAnalysisService(service.repository).analyze(root) for root in roots]
+        for result, identifier in zip(results, chosen, strict=True):
+            raw = service.repository.get("scan", result.scan_id)
+            if raw is not None:
+                raw.update(project_id=project, location_ids=[identifier])
+                service.repository.save("scan", result.scan_id, raw)
+        output = {
+            "project_id": project,
+            "scan_ids": [result.scan_id for result in results],
+            "event_count": sum(result.events for result in results),
+            "alert_count": sum(len(result.alerts) for result in results),
+            "partial": any(result.errors for result in results),
+        }
+        typer.echo(
+            json.dumps(output, sort_keys=True)
+            if json_output
+            else (
+                f"Analyzed project logs: {output['event_count']} events, "
+                f"{output['alert_count']} alerts."
+            )
+        )
+    except ProjectError as exc:
+        typer.echo(
+            json.dumps({"error": exc.code}) if json_output else f"Log analysis failed: {exc.code}.",
+            err=True,
+        )
         raise typer.Exit(code=2) from exc
     finally:
         service.repository.close()

@@ -118,6 +118,25 @@ From `C:\src\Chinescan` in PowerShell:
 docker compose -f docker-compose.yml config --quiet
 ```
 
+## Supplementary verification on 2026-10-31
+
+The current repository acceptance run used the required `uv run` entry point and isolated pytest
+storage under the operating-system temp directory. Exact commands and results:
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `uv run --no-sync ruff check .` | 0 | `All checks passed!` |
+| `uv run --no-sync ruff format --check .` | 0 | `149 files already formatted` |
+| `uv run --no-sync mypy --strict chinescan` | 0 | `Success: no issues found in 61 source files` |
+| `uv run --no-sync pytest --cov=chinescan --cov-report=term --cov-fail-under=80 --basetemp "$env:TEMP\chinescan-phase4a-verified-final"` | 0 | `290 passed, 5 deselected`; total coverage `81.54%` (80% required) |
+| `uv run --no-sync python -m compileall -q chinescan` | 0 | No output; compilation succeeded |
+| `uv run --no-sync pip-audit --skip-editable` | 0 | `No known vulnerabilities found`; editable distribution skipped |
+| `uv run --no-sync bandit --severity-level medium -r chinescan` | 0 | `No issues identified.` |
+
+Project log end-to-end API flow was also run twice in separate pytest processes using separate
+`--basetemp` directories: `1 passed in 6.61s` and `1 passed in 5.21s`. This uses FastAPI's
+in-process test client, not the browser E2E harness.
+
 Run the Alembic migration check through the pytest suite; pytest writes temporary databases under `tests/.pytest-tmp/`. The Docker image build command, after an authorized immutable base digest and registry access are available, is:
 
 ```powershell

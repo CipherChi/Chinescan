@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
+from chinescan.core.log_locations import LogLocationService
+from chinescan.core.projects import ProjectError
 from chinescan.core.storage.sqlite import SQLiteRepository
 from chinescan.log_analysis.service import LogAnalysisService
 
@@ -240,9 +242,11 @@ class LogJobManager:
         registry: LogSourceRegistry,
         *,
         queue_limit: int = 4,
+        project_locations: LogLocationService | None = None,
     ) -> None:
         self.repository, self.lock, self.registry = repository, lock, registry
         self.queue_limit = queue_limit
+        self.project_locations = project_locations
         self._condition = threading.Condition()
         self._queue: deque[str] = deque()
         self._thread: threading.Thread | None = None
@@ -292,6 +296,43 @@ class LogJobManager:
             self._condition.notify()
             return item
 
+    def submit_project(
+        self, project_id: str, location_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        if self.project_locations is None:
+            raise LogSourceError("Project log analysis is unavailable.")
+        available = self.project_locations.list(project_id)
+        selected = (
+            location_ids if location_ids is not None else [str(x["location_id"]) for x in available]
+        )
+        if not selected or len(selected) > 20 or len(set(selected)) != len(selected):
+            raise LogSourceError("Select at least one valid log location.")
+        for location_id in selected:
+            self.project_locations.resolve_location(project_id, location_id)
+        with self._condition, self.lock:
+            if len(self._queue) >= self.queue_limit:
+                raise OverflowError
+            item: dict[str, Any] = {
+                "job_id": str(uuid.uuid4()),
+                "source_id": "project:" + project_id,
+                "source_name": "Project logs",
+                "project_id": project_id,
+                "location_ids": selected,
+                "status": "queued",
+                "created_at": _now(),
+                "started_at": None,
+                "finished_at": None,
+                "scan_id": None,
+                "event_count": 0,
+                "alert_count": 0,
+                "error_count": 0,
+                "error": None,
+            }
+            self.repository.save("log_job", item["job_id"], item)
+            self._queue.append(item["job_id"])
+            self._condition.notify()
+            return item
+
     def list(self, limit: int, offset: int) -> tuple[list[dict[str, Any]], int]:
         with self.lock:
             return self.repository.page_records(
@@ -318,30 +359,58 @@ class LogJobManager:
             if job is None:
                 continue
             try:
-                _name, root, rules, iocs = self.registry.resolve(job["source_id"])
-                if not _safe_tree(root):
-                    raise LogSourceError(
-                        "Approved log source contains a linked or unsafe path entry."
-                    )
+                project_id = job.get("project_id")
+                if project_id:
+                    if self.project_locations is None:
+                        raise LogSourceError("Project log analysis is unavailable.")
+                    roots = [
+                        self.project_locations.resolve_location(project_id, item)
+                        for item in job["location_ids"]
+                    ]
+                    rules = iocs = None
+                    if any(not _safe_tree(root) for root in roots):
+                        raise ProjectError(
+                            "location_denied",
+                            "A selected log location now contains an unsafe path.",
+                        )
+                else:
+                    _name, root, rules, iocs = self.registry.resolve(job["source_id"])
+                    roots = [root]
+                    if not _safe_tree(root):
+                        raise LogSourceError(
+                            "Approved log source contains a linked or unsafe path entry."
+                        )
                 job.update(status="running", started_at=_now())
                 self._save(job)
-                result = LogAnalysisService(self.repository).analyze(
-                    root, rules_path=rules, ioc_path=iocs
-                )
-                with self.lock:
-                    persisted = self.repository.get("scan", result.scan_id)
-                if persisted is None:
-                    raise RuntimeError("result missing")
+                results = [
+                    LogAnalysisService(self.repository).analyze(
+                        root, rules_path=rules, ioc_path=iocs
+                    )
+                    for root in roots
+                ]
+                result = results[-1]
+                for completed in results:
+                    with self.lock:
+                        persisted = self.repository.get("scan", completed.scan_id)
+                    if persisted is None:
+                        raise RuntimeError("result missing")
+                    if project_id:
+                        persisted["project_id"] = project_id
+                        persisted["location_ids"] = list(job["location_ids"])
+                        self.repository.save("scan", completed.scan_id, persisted)
                 job.update(
-                    status="partial" if result.errors else "succeeded",
+                    status="partial" if any(item.errors for item in results) else "succeeded",
                     finished_at=_now(),
                     scan_id=result.scan_id,
-                    event_count=result.events,
-                    alert_count=len(result.alerts),
-                    error_count=len(result.errors),
-                    diagnostics=_safe_diagnostics(result.errors),
+                    event_count=sum(item.events for item in results),
+                    alert_count=sum(len(item.alerts) for item in results),
+                    error_count=sum(len(item.errors) for item in results),
+                    diagnostics=_safe_diagnostics(
+                        [error for item in results for error in item.errors]
+                    ),
+                    skipped_counts={"input_errors": sum(len(item.errors) for item in results)},
                 )
-                if result.errors:
+                if any(item.errors for item in results):
                     job["error"] = "Analysis is partial. Some input could not be processed."
             except Exception as exc:
                 job.update(
@@ -349,10 +418,12 @@ class LogJobManager:
                     finished_at=_now(),
                     error=(
                         str(exc)
-                        if isinstance(exc, LogSourceError)
+                        if isinstance(exc, (LogSourceError, ProjectError))
                         else "Analysis failed; details were withheld."
                     ),
                 )
+                if isinstance(exc, ProjectError):
+                    job["error_code"] = exc.code
             self._save(job)
 
     def _save(self, job: dict[str, Any]) -> None:
