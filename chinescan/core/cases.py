@@ -164,6 +164,7 @@ class CaseWorkflow:
             title=title or f"Investigation for {scan_id}",
             description=description,
             severity=severity,
+            project_id=scan.project_id,
             created_at=now,
             updated_at=now,
             scan_ids=[scan_id],

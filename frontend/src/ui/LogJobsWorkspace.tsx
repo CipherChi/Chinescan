@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, UnauthorizedError } from '../api';
-import type { CaseSummary, LogAlert, LogEvent, LogJob, LogSource, LogTimeline, Page } from '../types';
+import type { CaseSummary, LogAlert, LogEvent, LogJob, LogSource, LogSourceRegistryStatus, LogTimeline, Page } from '../types';
 
 export function LogJobsWorkspace({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [sources, setSources] = useState<LogSource[]>([]);
+  const [registryStatus, setRegistryStatus] = useState<LogSourceRegistryStatus | null>(null);
   const [jobs, setJobs] = useState<Page<LogJob> | null>(null);
   const [selected, setSelected] = useState('');
   const [alerts, setAlerts] = useState<Page<LogAlert> | null>(null);
@@ -24,8 +25,8 @@ export function LogJobsWorkspace({ onUnauthorized }: { onUnauthorized: () => voi
 
   const load = useCallback(async () => {
     try {
-      const [available, page, casePage] = await Promise.all([api.logSources(), api.logJobs(), api.cases()]);
-      setSources(available); setJobs(page); setCases(casePage);
+      const [available, status, page, casePage] = await Promise.all([api.logSources(), api.logSourcesStatus(), api.logJobs(), api.cases()]);
+      setSources(available); setRegistryStatus(status); setJobs(page); setCases(casePage);
       setSelected((current) => current || page.items.find((job) => job.scan_id)?.scan_id || '');
     } catch (reason) { if (reason instanceof UnauthorizedError) onUnauthorized(); else setError(reason instanceof Error ? reason.message : 'Unable to load log analyses.'); }
   }, [onUnauthorized]);
@@ -74,7 +75,7 @@ export function LogJobsWorkspace({ onUnauthorized }: { onUnauthorized: () => voi
     <div className="panel-heading"><div><h2>Local log analysis</h2><p>Configured local sources · bounded read-only ingestion · no uploads</p></div><span className="data-chip">Operator configured</span></div>
     {error && <div className="alert-error" role="alert"><span>!</span><div><strong>Log analysis</strong><p>{error}</p></div></div>}{notice && <p role="status" className="case-notice">{notice}</p>}
     <form onSubmit={start} className="job-start-form"><label htmlFor="approved-log-source">Approved log source</label><select id="approved-log-source" value={selectedSource} onChange={(event) => setSelectedSource(event.target.value)} required><option value="">Select a source</option>{sources.map((source) => <option key={source.source_id} value={source.source_id}>{source.display_name}</option>)}</select><button className="primary-button" disabled={!selectedSource || busy || sources.length === 0}>{busy ? 'Starting…' : 'Analyze logs'}</button></form>
-    {!sources.length && <div className="empty-state"><h3>No approved log sources</h3><p>Configure sources in the operator log-source file, then reload this page.</p></div>}
+    {!sources.length && <div className="empty-state"><h3>{registryStatus?.status === 'missing' ? 'Registry file not found' : registryStatus?.status === 'unreadable' ? 'Registry file is unreadable' : registryStatus?.status === 'invalid' ? 'Registry file is invalid' : registryStatus?.status === 'empty' ? 'Registry is valid but has no sources' : 'No approved log sources'}</h3><p>{registryStatus?.reason ?? 'Configure sources in the operator log-source file, then reload this page.'}</p></div>}
     {!jobs?.items.length ? <div className="empty-state"><h3>No log analysis jobs</h3><p>Queued results and partial-ingestion diagnostics will remain available here.</p></div> : <div className="table-scroll"><table><thead><tr><th>SOURCE</th><th>STATE</th><th>EVENTS</th><th>ALERTS</th><th>DIAGNOSTICS</th><th>RESULT</th></tr></thead><tbody>{jobs.items.map((job) => <tr key={job.job_id}><td>{job.source_name}<small className="sub-id">{job.job_id.slice(0, 8)}</small></td><td><span className="status">{job.status}</span>{job.error && <small className="sub-id">{job.error}</small>}{job.diagnostics.map((message) => <small className="sub-id" key={message}>{message}</small>)}</td><td>{job.event_count}</td><td>{job.alert_count}</td><td>{job.error_count || '—'}</td><td>{job.scan_id && <button className="text-button" onClick={() => setSelected(job.scan_id!)}>Open results →</button>}</td></tr>)}</tbody></table></div>}
     {selected && <>
       <div className="job-start-form"><label htmlFor="log-analysis-result">Persisted analysis</label><select id="log-analysis-result" value={selected} onChange={(event) => setSelected(event.target.value)}>{jobs?.items.filter((job) => job.scan_id).map((job) => <option key={job.scan_id} value={job.scan_id!}>{job.source_name} · {job.scan_id!.slice(0, 8)} · {job.status}</option>)}</select><button className="secondary-button" onClick={() => void createCase()}>Create case from analysis</button><label htmlFor="log-case">Link records to case</label><select id="log-case" value={caseId} onChange={(event) => setCaseId(event.target.value)}><option value="">Select case</option>{cases?.items.map((item) => <option key={item.case_id} value={item.case_id}>{item.title}</option>)}</select></div>

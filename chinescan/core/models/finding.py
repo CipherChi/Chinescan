@@ -20,6 +20,8 @@ class Reference(SchemaRecord):
 
 class Finding(SchemaRecord):
     finding_id: str = Field(default_factory=lambda: str(uuid4()))
+    project_id: str | None = None
+    project_removed: bool = False
     title: str
     description: str = ""
     severity: Severity = Severity.INFO

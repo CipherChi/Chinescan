@@ -241,7 +241,8 @@ def test_gitleaks_real_local_positive_negative_persistence_and_redaction(
     assert scanner.scan(negative) == []
     persisted = _persist_and_report(scanner, positive, tmp_path)
     serialized = json.dumps(persisted)
-    assert "ghp_0123456789abcdef0123456789abcdef0123" not in serialized
+    fixture_token = "ghp_" + "0123456789abcdef" * 2 + "0123"
+    assert fixture_token not in serialized
     record_property("gitleaks_version", version)
 
 

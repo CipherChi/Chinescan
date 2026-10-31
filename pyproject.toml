@@ -39,7 +39,7 @@ packages = ["chinescan"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers --basetemp=tests/.pytest-tmp"
+addopts = "--strict-markers"
 
 [tool.ruff]
 line-length = 100

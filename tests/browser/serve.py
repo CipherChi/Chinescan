@@ -43,10 +43,17 @@ class WaitForSessionExpiry:
             await self.application(scope, receive, send)
             return
         if path == "/api/auth/session" and self.scan_waiting.is_set():
+            response_body = bytearray()
 
             async def observe_expiry(message: Message) -> None:
-                if message["type"] == "http.response.start" and message["status"] == 401:
-                    self.session_expired.set()
+                if message["type"] == "http.response.body":
+                    response_body.extend(message.get("body", b""))
+                    try:
+                        payload = json.loads(response_body)
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        payload = None
+                    if isinstance(payload, dict) and payload.get("authenticated") is False:
+                        self.session_expired.set()
                 await send(message)
 
             await self.application(scope, receive, observe_expiry)
@@ -59,21 +66,22 @@ def _read_test_credentials() -> tuple[str, str]:
     if len(raw) > 512 or not raw.endswith(b"\n"):
         raise ValueError("Invalid browser fixture credential request.")
     request = json.loads(raw)
-    if not isinstance(request, dict) or set(request) != {"username", "password"}:
+    if not isinstance(request, dict) or set(request) != {"email", "password"}:
         raise ValueError("Invalid browser fixture credential request.")
-    username = request["username"]
+    email = request["email"]
     password = request["password"]
     if (
-        not isinstance(username, str)
-        or not username.startswith("browser-")
-        or len(username) > 64
+        not isinstance(email, str)
+        or not email.startswith("browser-")
+        or not email.endswith("@example.test")
+        or len(email) > 100
         or not isinstance(password, str)
         or not 24 <= len(password) <= 128
         or "\n" in password
         or "\r" in password
     ):
         raise ValueError("Invalid browser fixture credentials.")
-    return username, password
+    return email, password
 
 
 def main() -> None:
@@ -81,14 +89,39 @@ def main() -> None:
     parser.add_argument("--data-dir", required=True, type=Path)
     parser.add_argument("--ttl", required=True, type=int)
     parser.add_argument("--hold-scan-until-expiry", action="store_true")
+    parser.add_argument("--empty-account", action="store_true")
+    parser.add_argument("--projects-enabled", action="store_true")
     args = parser.parse_args()
-    operator_username, operator_password = _read_test_credentials()
+    operator_email, operator_password = (
+        (None, None) if args.empty_account else _read_test_credentials()
+    )
     args.data_dir.mkdir(parents=True, exist_ok=False)
     database = args.data_dir / "records.sqlite3"
     credentials = args.data_dir / "operator.json"
     project = args.data_dir.parent / f"{args.data_dir.name}-approved-project"
     project.mkdir()
     (project / "app.py").write_text("eval(user_input)\n", encoding="utf-8")
+    (project / "worker.py").write_text("exec(payload)\n", encoding="utf-8")
+    if args.projects_enabled:
+        project_logs = project / "logs"
+        project_logs.mkdir()
+        (project_logs / "auth-sample.jsonl").write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "timestamp": f"2026-10-27T10:00:{index:02d}Z",
+                        "event_type": "authentication",
+                        "message": "login failure",
+                        "source_ip": "203.0.113.45",
+                        "user": "e2e-analyst",
+                        "outcome": "failure",
+                    }
+                )
+                + "\n"
+                for index in range(5)
+            ),
+            encoding="utf-8",
+        )
     projects_config = args.data_dir / "projects.toml"
     projects_config.write_text(
         "[[projects]]\n"
@@ -97,6 +130,9 @@ def main() -> None:
         f'root = "{project.as_posix()}"\n',
         encoding="utf-8",
     )
+    config_path = args.data_dir / "config.toml"
+    configured_roots = f"['{project.as_posix()}']" if args.projects_enabled else "[]"
+    config_path.write_text(f"allowed_roots = {configured_roots}\n", encoding="utf-8")
     log_source = args.data_dir.parent / f"{args.data_dir.name}-approved-logs"
     log_source.mkdir()
     (log_source / "auth.jsonl").write_text(
@@ -138,7 +174,8 @@ def main() -> None:
         encoding="utf-8",
     )
     managed_root = args.data_dir.parent / f"{args.data_dir.name}-managed-malware"
-    create_operator(credentials, operator_username, operator_password)
+    if operator_email is not None and operator_password is not None:
+        create_operator(credentials, operator_email, operator_password)
 
     repository = SQLiteRepository(database)
     finding = Finding(
@@ -199,6 +236,8 @@ def main() -> None:
             _env_file=None,
             database_path=database,
             malware_managed_directory=managed_root,
+            allowed_roots=[project] if args.projects_enabled else [],
+            max_files=1,
         ),
     )
     served_application: ASGIApp = application

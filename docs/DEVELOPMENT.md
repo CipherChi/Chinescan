@@ -1,5 +1,15 @@
 # Development
 
+Project log locations are local, read-only associations. In the authenticated project detail
+page, add folders from the project tree or another approved filesystem root, review metadata-only
+suggestions, and run analysis against selected locations. CLI support is available through
+`uv run chinescan projects logs list --project PROJECT_ID --json`, `add --project PROJECT_ID
+--name NAME --path ABSOLUTE_PATH`, `suggest --project PROJECT_ID --json`, `analyze --project
+PROJECT_ID [--location LOCATION_ID] --json`, and `remove LOCATION_ID --project PROJECT_ID
+--yes`. The CLI accepts paths only for additions because browser selection IDs are short-lived
+and session-bound. Removing a location removes its association only; files, scans, and findings
+remain. EVTX is surfaced as unsupported until a bounded read-only parser is implemented.
+
 Use Python 3.12+ and `uv`:
 
 ```powershell
@@ -36,6 +46,53 @@ with `npm ci --no-audit` from `frontend/`. Run the backend explicitly with
 `uv run chinescan web serve` and the development UI with `npm run dev`. Both bind to loopback;
 Vite proxies `/api` to port 8765.
 
+The operator identity is an email address. ChineScan trims and lowercases it for case-insensitive
+lookup. With no credential file, open the Vite loopback URL and choose **Create operator account**.
+Signup creates the sole local operator and signs it in immediately. Passwords require at least 12
+characters and are stored as Argon2id hashes. Signup returns a generic conflict after an account
+exists.
+
+Passwords cannot be recovered; they can only be reset. **Forgot password?** gives generic local
+instructions. Run `uv run chinescan web reset-password --email operator@example.com`; the CLI
+prints a one-time token locally. Enter it with the email and new password at `/reset-password`
+within 15 minutes. The raw token is never returned by the API or written to logs; only its SHA-256
+digest is stored. Tokens are single-use, a later reset request replaces an earlier token, and
+repeat CLI requests are limited to one per minute. Reset invalidates existing sessions.
+
+`uv run chinescan web recover-operator` first creates and names a timestamped credential backup,
+then asks whether to reset/migrate or retire the local operator. The `retire` choice removes only
+the credential file after explicit confirmation; database scans, settings, and other data remain.
+The reset/migrate choice asks for an email, preserves the old password hash until the operator
+completes the new-token reset flow, and prints a reset token locally. A legacy `username`
+credential already containing a valid email is backed up and migrated on app startup. A non-email
+legacy value is backed up, marked as requiring recovery, and cannot sign in until the guided
+recovery flow replaces it.
+
+`uv run chinescan web bootstrap` remains the terminal setup path and refuses to overwrite an
+existing account. The public `POST /api/auth/signup` accepts `email` and `password`; `POST
+/api/auth/forgot-password` and `POST /api/auth/reset-password` follow the same loopback and
+same-origin guards. See [API](API.md) for request details. Backend coverage is in
+`tests/unit/test_web_api.py` (`uv run pytest tests/unit/test_web_api.py`). The Playwright flow in
+`frontend/e2e/operator-recovery.spec.ts` covers signup, logout, local reset-token use, login, and
+dashboard access with synthetic credentials. Its Playwright trace and screenshots are disabled so
+the synthetic one-time token is not retained in test artifacts.
+
+To disable an existing operator without creating another one, run
+`uv run chinescan web retire-operator`. The command makes a timestamped copy beside the active
+credential file (`operator.json.bak-YYYYMMDD-HHMMSS`), shows only the username/email-field
+presence and file paths, then requires the exact phrase `RETIRE OPERATOR`. On confirmation, it
+renames the active file to `operator.json.retired-YYYYMMDD-HHMMSS`. It touches no scan records,
+application settings, or other files. Pass `--credential-file PATH` if bootstrap/serve uses a
+custom credential path. A missing active file is a successful no-op.
+
+To restore an archived credential, run `uv run chinescan web restore-operator`, select a listed
+backup or retired file, and type `RESTORE OPERATOR`. If an active credential exists, it is first
+copied to a timestamped `.bak-*` file before the selected archive is restored. These commands
+never print password hashes or create a replacement account. Passwords and Argon2id hashes cannot
+be recovered from the credential file; the backup preserves the hash for restoring the old login.
+After retirement, manually start the backend and use browser signup or `uv run chinescan web
+bootstrap` when you are ready to create an operator.
+
 For production browser acceptance, first build the frontend and install Playwright's Chromium
 browser locally (no global package or system browser installation):
 
@@ -55,11 +112,16 @@ fixture data are removed after the run. Traces and screenshots are retained only
 under `frontend/test-results/`; do not commit these generated artifacts. The suite requires
 Python 3.12+ and the project Python environment available to `py -3.12`.
 
-Create the single operator account with `uv run chinescan web bootstrap`. The default credential
-file is under the user profile at `~/.config/chinescan/operator.json`; it contains an Argon2id
-password hash and is created without replacing an existing account. On Windows, protect this file
-through the user's profile ACL; POSIX mode bits do not prove Windows ACL protection. A custom path
-can be supplied with `--credential-file`.
+Create the single operator account in the browser or with `uv run chinescan web bootstrap`. The
+default credential file is `%USERPROFILE%\.config\chinescan\operator.json`; it contains the
+operator email and Argon2id password hash. To inspect only the email in PowerShell, run:
+
+```powershell
+(Get-Content "$env:USERPROFILE\.config\chinescan\operator.json" | ConvertFrom-Json).email
+```
+
+On Windows, protect this file through the user's profile ACL; POSIX mode bits do not prove Windows
+ACL protection. A custom path can be supplied with `--credential-file`.
 
 The dashboard uses one Uvicorn worker, volatile sessions, 30-minute expiry, HttpOnly and
 SameSite=Strict cookies, CSRF validation, loopback host/origin checks, and a five-attempt
@@ -119,3 +181,13 @@ an ID-based local source registry with optional local Sigma rules and IOC list p
 cannot submit file paths or detection logic. Alerts, events, and source timelines are paginated and
 scoped to a persisted log scan. Partial ingestion is represented as a partial job with path-free
 diagnostic categories. See the [log-source operator guide](LOG-SOURCES.md) and [API contract](API.md).
+# Authentication throttling
+
+Login, signup, password reset, and forgot-password throttles are held in process memory and keyed by client IP and normalized email. Five failures begin a one minute lockout; repeated groups of five increase the delay to five and fifteen minutes, capped at fifteen minutes. Restarting the local service clears these counters. Locked requests return a generic response and `Retry-After` header.
+
+## Local environment troubleshooting
+
+Use the repository's uv-managed environment for development commands. If `uv run` reports a missing `pyvenv.cfg`, confirm `UV_PROJECT_ENVIRONMENT` and `VIRTUAL_ENV` are unset or point to this repository's `.venv`, then run `uv sync --all-groups --all-extras`. Run pytest with `--basetemp` under the operating system temporary directory so SQLite handles are not removed while the repository is in use.
+# EVTX log support
+
+EVTX files are detected by project log suggestions and shown as unsupported until a parser is available. A future parser should use a bounded, read-only implementation: accept only regular files approved by filesystem policy, cap file bytes, records, nesting, and elapsed time, parse from a bounded stream without executing embedded content, and return a partial result with skipped counts when a cap is reached. It must not upload samples or write beside the source file.
