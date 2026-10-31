@@ -7,6 +7,9 @@
   were no unpushed PR #6 fix commits to publish.
 - Work began on `hardening/log-locations`, stacked on `hardening/projects`, as PR #6 remains open.
 - No merge or approval was performed.
+- PR #7 was initially created against `hardening/projects`, where GitHub reported no checks. Its
+  base was changed to `main` because the repository workflow only triggers PR checks against main;
+  the source branch ancestry remains stacked and no commit was rewritten.
 
 ## Implementation
 
