@@ -102,6 +102,26 @@ def main() -> None:
     project.mkdir()
     (project / "app.py").write_text("eval(user_input)\n", encoding="utf-8")
     (project / "worker.py").write_text("exec(payload)\n", encoding="utf-8")
+    if args.projects_enabled:
+        project_logs = project / "logs"
+        project_logs.mkdir()
+        (project_logs / "auth-sample.jsonl").write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "timestamp": f"2026-10-27T10:00:{index:02d}Z",
+                        "event_type": "authentication",
+                        "message": "login failure",
+                        "source_ip": "203.0.113.45",
+                        "user": "e2e-analyst",
+                        "outcome": "failure",
+                    }
+                )
+                + "\n"
+                for index in range(5)
+            ),
+            encoding="utf-8",
+        )
     projects_config = args.data_dir / "projects.toml"
     projects_config.write_text(
         "[[projects]]\n"
