@@ -33,6 +33,8 @@ from chinescan.core.fs_policy import FilesystemBrowserService, policy_paths
 from chinescan.core.log_locations import LogLocationService
 from chinescan.core.logging.redaction import redact
 from chinescan.core.logging.structured import configure_logging
+from chinescan.core.malware_ack import MalwareAcknowledgementError, MalwareAcknowledgements
+from chinescan.core.malware_project_scan import ProjectMalwareJobs, ProjectMalwareScanner
 from chinescan.core.models.common import Confidence, FindingCategory, ScanVerdict, Severity
 from chinescan.core.models.finding import Finding
 from chinescan.core.models.investigation import (
@@ -267,6 +269,19 @@ class MalwareJobCreateRequest(BaseModel):
     profile: Literal["builtin_static"] = "builtin_static"
 
 
+class MalwareAcknowledgementRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: str = Field(min_length=1, max_length=80)
+    confirmed: bool = False
+    typed_phrase: str | None = Field(default=None, max_length=80)
+
+
+class ProjectMalwareJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    acknowledgement_token: str | None = Field(default=None, min_length=32, max_length=128)
+    profile: Literal["builtin_static"]
+
+
 class MalwareSampleResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     registry_id: str | None
@@ -498,6 +513,10 @@ def create_app(
     log_jobs = LogJobManager(
         repository, db_lock, log_registry, project_locations=log_location_service
     )
+    malware_acknowledgements = MalwareAcknowledgements(repository)
+    project_malware_jobs = ProjectMalwareJobs(
+        repository, ProjectMalwareScanner(repository, project_service, active_settings)
+    )
     jobs = CodeJobManager(
         repository,
         db_lock,
@@ -547,6 +566,7 @@ def create_app(
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         jobs.start()
         log_jobs.start()
+        project_malware_jobs.start()
         if malware_jobs is not None:
             malware_jobs.start()
         try:
@@ -555,6 +575,7 @@ def create_app(
             if malware_jobs is not None:
                 malware_jobs.stop()
             log_jobs.stop()
+            project_malware_jobs.stop()
             jobs.stop()
         repository.close()
 
@@ -568,6 +589,7 @@ def create_app(
     application.state.log_source_registry = log_registry
     application.state.log_job_manager = log_jobs
     application.state.malware_job_manager = malware_jobs
+    application.state.project_malware_job_manager = project_malware_jobs
 
     @application.exception_handler(RequestValidationError)
     async def validation_error_handler(_request: Request, exc: RequestValidationError) -> Response:
@@ -1042,6 +1064,106 @@ def create_app(
         except OverflowError as exc:
             raise HTTPException(status_code=429, detail="The log analysis queue is full.") from exc
 
+    @application.post("/api/malware/acknowledgements", status_code=201)
+    def issue_malware_acknowledgement(
+        payload: MalwareAcknowledgementRequest,
+        request: Request,
+        session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, str]:
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("malware-ack:" + client_ip):
+            raise HTTPException(
+                status_code=429, detail={"code": "rate_limited", "message": "Try again shortly."}
+            )
+        try:
+            project_service.resolve(payload.project_id)
+            return malware_acknowledgements.issue(
+                payload.project_id, session.csrf_token, payload.confirmed
+            )
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=404, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+        except MalwareAcknowledgementError as exc:
+            raise HTTPException(
+                status_code=422, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+
+    @application.get("/api/malware/host-hint")
+    def malware_host_hint(_session: Session = Depends(current_session)) -> dict[str, str | bool]:  # noqa: B008
+        import os
+        import platform
+
+        signals = " ".join(
+            (
+                platform.platform(),
+                os.environ.get("PROCESSOR_IDENTIFIER", ""),
+                os.environ.get("COMPUTERNAME", ""),
+            )
+        ).casefold()
+        virtualized: bool | str = (
+            True
+            if any(
+                token in signals for token in ("virtual", "vmware", "hyper-v", "kvm", "qemu", "xen")
+            )
+            else "unknown"
+        )
+        return {"virtualized": virtualized, "confidence": "low"}
+
+    @application.post("/api/projects/{project_id}/malware-jobs", status_code=202)
+    def start_project_malware_job(
+        project_id: str,
+        payload: ProjectMalwareJobRequest,
+        request: Request,
+        session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:
+        client_ip = request.client.host if request.client else ""
+        if not project_throttle.allowed("malware-job:" + client_ip):
+            raise HTTPException(
+                status_code=429, detail={"code": "rate_limited", "message": "Try again shortly."}
+            )
+        if not payload.acknowledgement_token:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "invalid_acknowledgement",
+                    "message": "A valid project VM-risk acknowledgement is required.",
+                },
+            )
+        try:
+            malware_acknowledgements.consume(
+                payload.acknowledgement_token, project_id, session.csrf_token
+            )
+            job = project_malware_jobs.submit(project_id)
+            return _safe_project_malware_job(job)
+        except MalwareAcknowledgementError as exc:
+            raise HTTPException(
+                status_code=403, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+        except ProjectError as exc:
+            raise HTTPException(
+                status_code=422, detail={"code": exc.code, "message": str(exc)}
+            ) from exc
+        except OverflowError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail={"code": "queue_full", "message": "The project scan queue is full."},
+            ) from exc
+
+    @application.get("/api/projects/{project_id}/malware-jobs/{job_id}")
+    def get_project_malware_job(
+        project_id: str,
+        job_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:
+        job = project_malware_jobs.get(job_id)
+        if job is None or job.get("project_id") != project_id:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "job_not_found", "message": "Project malware job not found."},
+            )
+        return _safe_project_malware_job(job)
+
     @application.post("/api/projects", status_code=201)
     def add_project(
         payload: ProjectCreateRequest,
@@ -1211,35 +1333,19 @@ def create_app(
 
     @application.post("/api/malware/jobs", response_model=MalwareJobResponse, status_code=202)
     def create_malware_job(
-        payload: MalwareJobCreateRequest,
+        _payload: MalwareJobCreateRequest,
         _session: Session = Depends(require_csrf),  # noqa: B008
     ) -> dict[str, Any]:  # noqa: B008
-        if malware_jobs is None:
-            raise HTTPException(status_code=503, detail=malware_diagnostic)
-        if (payload.registry_id is None) == (payload.sample_id is None):
-            raise HTTPException(
-                status_code=422,
-                detail="Provide exactly one registered sample ID or managed sample ID.",
-            )
-        try:
-            job = (
-                malware_jobs.submit(payload.registry_id)
-                if payload.registry_id is not None
-                else malware_jobs.submit_managed(str(payload.sample_id))
-            )
-            return _malware_job_view(job, repository)
-        except OverflowError as exc:
-            raise HTTPException(
-                status_code=429,
-                detail="The malware analysis queue is full (one active and four queued).",
-            ) from exc
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=503 if not malware_jobs.execution_available else 409,
-                detail=str(exc)[:300],
-            ) from exc
-        except (ValueError, ManagedSampleError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)[:300]) from exc
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "code": "sample_workflow_deprecated",
+                "message": (
+                    "New sample-based jobs are deprecated. Scan an approved project after "
+                    "acknowledging VM risk."
+                ),
+            },
+        )
 
     @application.get("/api/malware/jobs", response_model=MalwareJobPageResponse)
     def list_malware_jobs(
@@ -1763,6 +1869,26 @@ def create_app(
         application.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
     return application
+
+
+def _safe_project_malware_job(raw: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "job_id",
+        "project_id",
+        "status",
+        "profile",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "scan_id",
+        "finding_count",
+        "files_seen",
+        "skipped_counts",
+        "coverage_notes",
+        "error_code",
+        "error",
+    )
+    return {key: raw.get(key) for key in keys if key in raw}
 
 
 def _malware_job_view(raw: dict[str, Any], repository: SQLiteRepository) -> dict[str, Any]:

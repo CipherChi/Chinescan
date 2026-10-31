@@ -9,7 +9,7 @@ function makeProject(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
 }
 
 function makeDetail(overrides: Partial<ProjectDetail> = {}): ProjectDetail {
-  return { ...makeProject(overrides), recent_jobs: [], findings_count: 0, findings: [], linked_cases: [], recent_scans: [], log_locations: [], log_alerts: [], log_events: [], log_timeline: [], ...overrides };
+  return { ...makeProject(overrides), recent_jobs: [], malware_jobs: [], findings_count: 0, findings: [], linked_cases: [], recent_scans: [], log_locations: [], log_alerts: [], log_events: [], log_timeline: [], ...overrides };
 }
 
 function makeLocation(overrides: Partial<ProjectLogLocation> = {}): ProjectLogLocation {

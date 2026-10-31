@@ -146,7 +146,24 @@ Use `chinescan code <project> --fail-on high` to make a CI job exit with status 
 
 Log analysis reads local exports and bounded archives without extraction or network access. Raw log lines are not persisted; normalized records are retained in the configured SQLite database. The Sigma evaluator supports a safe, documented subset, not the entire Sigma language.
 
-Malware static triage reads one regular file up to 64 MiB and never executes it. The `malware analyze` CLI remains ephemeral; the backend-only Stage B1 library supports explicit registry-based managed copies and persists sample metadata, jobs, bounded results, and audit records. Managed sample bytes remain outside database backups. See [Malware backend operations](MALWARE-BACKEND.md) for its required storage configuration, limits, worker controls, recovery, and remaining boundaries. Neither path is a malware sandbox, memory analysis, or dynamic analysis. YARA and ClamAV remain opt-in local tools and are not called by the managed B1 job path.
+Malware static triage reads one regular file up to 64 MiB and never executes it. The standalone sample intake and job workflow is deprecated: new sample registrations and jobs return `410 sample_workflow_deprecated`; existing sample records, analyses, and case links remain read-only history. Use `chinescan projects malware scan --project <id> --i-understand-vm-risk` or the project page. Project scans require an explicit acknowledgement at the backend and apply bounded static checks without executing, importing, installing, extracting, or passing project content to a child process. They are heuristic leads, not verdicts. Run Chinescan and the scan inside an isolated VM or sandbox. Process containment is not an OS sandbox and does not isolate filesystem or network access. The B1 sample worker remains a separate historical path with managed storage and Windows Job Object controls; those controls are not an OS sandbox. See [Malware backend operations](MALWARE-BACKEND.md) for its historical storage configuration and recovery boundaries.
+
+Project scanning visits at most 50,000 files, 1 GiB total, 16 MiB per file, depth 32, 2 seconds of checked time per file, and a 300 second job deadline by default. Per-file time is checked between reads; a slow disk read cannot be interrupted. Custom local rules use ChineScan's own small bounded TOML rule format and are not native YARA rules. If no rules directory is configured, custom-rule coverage is visibly marked as skipped. The host virtualization hint is unreliable and never controls whether scanning is allowed.
+
+Local project malware rules are read only from `.toml` files in the configured rules directory. Unknown keys or invalid entries reject that file and add a path-free coverage note. The format supports up to 100 rules per file, 20 strings per rule, 500 characters per pattern, and a `min_matches` count from 1 to 50. Regexes use a restricted safe subset; backreferences and nested quantified groups are rejected.
+
+```toml
+[[rules]]
+id = "download_hint"
+title = "Download command hint"
+severity = "medium"
+description = "A local operator rule for a command indicator."
+strings = [
+  { kind = "literal", value = "Invoke-WebRequest", nocase = true },
+  { kind = "regex", value = "curl[ ]+https?://", nocase = true },
+]
+condition = { min_matches = 1 }
+```
 
 Domain assessment is the sole built-in network posture command. Use it only with explicit ownership or a matching local authorization file. Unit tests mock all domain network operations; do not add live targets to acceptance checks.
 

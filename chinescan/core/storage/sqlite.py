@@ -1,5 +1,6 @@
 """SQLAlchemy-backed SQLite repository."""
 
+import hmac
 import json
 from pathlib import Path
 from typing import Any, cast, overload
@@ -114,6 +115,53 @@ class SQLiteRepository(Repository):
                         payload=json.loads(json.dumps(payload)),
                     )
                 )
+
+    def consume_malware_acknowledgement(
+        self, token_hash: str, project_id: str, session_id: str, now: str
+    ) -> str:
+        """Atomically verify and consume one project/session acknowledgement."""
+        with self.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    select(records.c.record_id, records.c.payload).where(
+                        records.c.record_type == "malware_ack",
+                        records.c.record_id == token_hash,
+                    )
+                ).first()
+                if row is None:
+                    connection.commit()
+                    return "missing_or_invalid"
+                payload = cast(dict[str, Any], row.payload)
+                if not hmac.compare_digest(str(payload.get("token_hash", "")), token_hash):
+                    connection.commit()
+                    return "missing_or_invalid"
+                reason = (
+                    "wrong_session"
+                    if payload.get("session_id") != session_id
+                    else "wrong_project"
+                    if payload.get("project_id") != project_id
+                    else "replayed"
+                    if payload.get("consumed")
+                    else "expired"
+                    if str(payload.get("expires_at", "")) <= now
+                    else ""
+                )
+                if not reason:
+                    payload["consumed"] = True
+                    connection.execute(
+                        records.update()
+                        .where(
+                            records.c.record_type == "malware_ack",
+                            records.c.record_id == token_hash,
+                        )
+                        .values(payload=payload)
+                    )
+                connection.commit()
+                return reason or "consumed"
+            except Exception:
+                connection.rollback()
+                raise
 
     def delete(self, record_type: str, record_id: str) -> None:
         """Delete one explicitly named record without touching related records."""

@@ -37,6 +37,9 @@ chinescan = "chinescan.cli.app:main"
 [tool.hatch.build.targets.wheel]
 packages = ["chinescan"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"chinescan/data/top-packages.txt" = "chinescan/data/top-packages.txt"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers"

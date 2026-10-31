@@ -1,0 +1,24 @@
+# Compact operator-independent list for low-confidence typo leads.
+react
+express
+lodash
+axios
+chalk
+debug
+typescript
+requests
+flask
+django
+urllib3
+numpy
+pandas
+pytest
+fastapi
+next
+vite
+webpack
+moment
+commander
+minimist
+glob
+semver
