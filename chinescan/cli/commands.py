@@ -26,6 +26,8 @@ from chinescan.core.fs_policy import (
 )
 from chinescan.core.log_locations import LogLocationService
 from chinescan.core.logging.redaction import redact
+from chinescan.core.malware_ack import MalwareAcknowledgementError, MalwareAcknowledgements
+from chinescan.core.malware_project_scan import ProjectMalwareScanner
 from chinescan.core.models.common import Severity
 from chinescan.core.models.investigation import CaseStatus
 from chinescan.core.orchestration.code_scan import (
@@ -1379,7 +1381,9 @@ def fs_roots(json_output: bool = typer.Option(False, "--json")) -> None:
 
 projects_app = typer.Typer(help="Manage locally approved code projects.")
 project_logs_app = typer.Typer(help="Manage project log locations and analyze local logs.")
+project_malware_app = typer.Typer(help="Static malware leads for approved projects.")
 projects_app.add_typer(project_logs_app, name="logs")
+projects_app.add_typer(project_malware_app, name="malware")
 
 
 def _project_service() -> ProjectService:
@@ -1499,6 +1503,93 @@ def projects_remove(
         )
     except ProjectError as exc:
         typer.echo(f"Project removal failed: {exc.code}.", err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()
+
+
+@project_malware_app.command("scan")
+def project_malware_scan(
+    project: str = typer.Option(..., "--project"),
+    i_understand_vm_risk: bool = typer.Option(False, "--i-understand-vm-risk"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    if not i_understand_vm_risk:
+        typer.echo("Refusing project malware scan without --i-understand-vm-risk.", err=True)
+        raise typer.Exit(code=2)
+    service = _project_service()
+    try:
+        ack = MalwareAcknowledgements(service.repository)
+        issued = ack.issue(project, "cli", True)
+        ack.consume(issued["token"], project, "cli")
+        result = ProjectMalwareScanner(service.repository, service, _settings()).scan(project)
+        typer.echo(
+            json.dumps(result, sort_keys=True)
+            if json_output
+            else (
+                f"Static project scan {result['status']}; "
+                f"{result['finding_count']} heuristic leads."
+            )
+        )
+    except (ProjectError, MalwareAcknowledgementError) as exc:
+        typer.echo(
+            json.dumps({"error": getattr(exc, "code", "scan_failed")})
+            if json_output
+            else f"Project malware scan failed: {getattr(exc, 'code', 'scan_failed')}.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()
+
+
+@project_malware_app.command("list")
+def project_malware_list(
+    project: str = typer.Option(..., "--project"), json_output: bool = typer.Option(False, "--json")
+) -> None:
+    service = _project_service()
+    try:
+        service.resolve(project)
+        items = [
+            row
+            for row in service.repository.list_records("project_malware_job")
+            if row.get("project_id") == project
+        ]
+        items.sort(key=lambda row: str(row.get("created_at", "")), reverse=True)
+        typer.echo(
+            json.dumps(items, sort_keys=True)
+            if json_output
+            else "\n".join(
+                f"{row['job_id']} {row['status']} {row.get('finding_count', 0)} findings"
+                for row in items
+            )
+            or "No project malware scans."
+        )
+    except ProjectError as exc:
+        typer.echo(f"Project malware list failed: {exc.code}.", err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        service.repository.close()
+
+
+@project_malware_app.command("show")
+def project_malware_show(
+    job_id: str = typer.Argument(...),
+    project: str = typer.Option(..., "--project"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    service = _project_service()
+    try:
+        row = service.repository.get("project_malware_job", job_id)
+        if row is None or row.get("project_id") != project:
+            raise ProjectError("job_not_found", "Project malware job not found.")
+        typer.echo(
+            json.dumps(row, sort_keys=True)
+            if json_output
+            else f"{row['status']} · {row.get('finding_count', 0)} heuristic leads"
+        )
+    except ProjectError as exc:
+        typer.echo(f"Project malware detail failed: {exc.code}.", err=True)
         raise typer.Exit(code=2) from exc
     finally:
         service.repository.close()

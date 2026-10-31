@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     max_depth: int = 32
     per_file_seconds: float = 2.0
     job_deadline_seconds: int = 300
+    malware_max_files: int = 50_000
+    malware_max_total_bytes: int = 1_073_741_824
+    malware_max_file_bytes: int = 16_777_216
+    malware_max_depth: int = 32
+    malware_per_file_seconds: float = 2.0
+    malware_job_deadline_seconds: int = 300
+    malware_known_bad_hashes: Path | None = None
+    malware_rules_directory: Path | None = None
     data_source: Literal["real", "simulation"] = "real"
     _allowed_root_validation: list[object] = PrivateAttr(default_factory=list)
 
