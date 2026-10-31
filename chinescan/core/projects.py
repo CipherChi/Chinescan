@@ -310,12 +310,40 @@ class ProjectService:
             if row.get("project_id") == project_id
         ]
         jobs.sort(key=lambda row: str(row.get("created_at", "")), reverse=True)
+        malware_jobs = [
+            row
+            for row in self.repository.list_records("project_malware_job")
+            if row.get("project_id") == project_id
+        ]
+        malware_jobs.sort(key=lambda row: str(row.get("created_at", "")), reverse=True)
         return {
             **self._summary(item),
             "origin_label": "This device" if item.get("kind") == "local" else "GitHub",
             "last_scan_refs": [row["scan_id"] for row in scans[:10]],
             "recent_scans": [self._safe_scan(row) for row in scans[:10]],
             "recent_jobs": [self._safe_job(row) for row in jobs[:10]],
+            "malware_jobs": [
+                {
+                    key: row.get(key)
+                    for key in (
+                        "job_id",
+                        "project_id",
+                        "status",
+                        "profile",
+                        "created_at",
+                        "started_at",
+                        "finished_at",
+                        "scan_id",
+                        "finding_count",
+                        "files_seen",
+                        "skipped_counts",
+                        "coverage_notes",
+                        "error_code",
+                        "error",
+                    )
+                }
+                for row in malware_jobs[:10]
+            ],
             "findings_count": len(findings),
             "findings": [self._safe_finding(row) for row in findings[:100]],
             "linked_cases": [self._safe_case(row) for row in cases[:50]],
@@ -475,6 +503,7 @@ class ProjectService:
                 "rule_id",
                 "location",
                 "description",
+                "tags",
             )
         }
 
