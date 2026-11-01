@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,6 +57,7 @@ async function start(
   holdScanUntilExpiry = false,
   emptyAccount = false,
   projectsEnabled = false,
+  missingManagedStorage = false,
 ): Promise<{ url: string; email: string; password: string; credentialFile: string }> {
   const directory = resolve(dataRoot, `instance-${children.length}-ttl-${ttl}`);
   const python = 'uv';
@@ -64,6 +65,7 @@ async function start(
   if (holdScanUntilExpiry) args.push('--hold-scan-until-expiry');
   if (emptyAccount) args.push('--empty-account');
   if (projectsEnabled) args.push('--projects-enabled');
+  if (missingManagedStorage) args.push('--missing-managed-storage');
   const child = spawn(python, args, {
     cwd: repoRoot,
     env: {
@@ -167,10 +169,14 @@ export default async function globalSetup(_config: FullConfig) {
       expiry: await start(15, makeCredentials(), true),
       signup: await start(1800, makeCredentials(), false, true),
       emptyRoots: await start(1800, makeCredentials()),
+      diagnosticsDegraded: await start(1800, makeCredentials(), false, false, false, true),
     };
     process.env.CHINESCAN_BROWSER_TEST_URLS = JSON.stringify(urls);
     process.env.CHINESCAN_BROWSER_PROJECT_FIXTURE = resolve(dataRoot, 'instance-0-ttl-1800-approved-project');
     process.env.CHINESCAN_BROWSER_SCREENSHOT_DIR = resolve(tmpdir(), 'chinescan-projects-e2e-screenshots');
+    const statusScreenshotDirectory = resolve(tmpdir(), 'chinescan-phase5a-status-screenshots');
+    await mkdir(statusScreenshotDirectory, { recursive: true });
+    process.env.CHINESCAN_BROWSER_STATUS_SCREENSHOTS = statusScreenshotDirectory;
   } catch (error) {
     await Promise.all(children.map(stopOwned));
     await rm(dataRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
@@ -181,6 +187,7 @@ export default async function globalSetup(_config: FullConfig) {
     delete process.env.CHINESCAN_BROWSER_TEST_URLS;
     delete process.env.CHINESCAN_BROWSER_PROJECT_FIXTURE;
     delete process.env.CHINESCAN_BROWSER_SCREENSHOT_DIR;
+    delete process.env.CHINESCAN_BROWSER_STATUS_SCREENSHOTS;
     await rm(dataRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
   };
 }
