@@ -29,6 +29,7 @@ from chinescan.core.cases import (
     CaseWorkflowError,
 )
 from chinescan.core.config.settings import Settings
+from chinescan.core.diagnostics import build_report, health_report
 from chinescan.core.fs_policy import FilesystemBrowserService, policy_paths
 from chinescan.core.log_locations import LogLocationService
 from chinescan.core.logging.redaction import redact
@@ -464,7 +465,10 @@ def create_app(
     db_lock = threading.RLock()
     sessions = SessionStore(session_ttl_seconds)
     credentials = Path(credential_path)
-    migrate_legacy_operator(credentials)
+    try:
+        migrate_legacy_operator(credentials)
+    except CredentialError:
+        logging.getLogger("chinescan.auth").warning("operator_credentials_need_recovery")
     registry = ProjectRegistry(
         projects_path,
         [
@@ -590,6 +594,8 @@ def create_app(
     application.state.log_job_manager = log_jobs
     application.state.malware_job_manager = malware_jobs
     application.state.project_malware_job_manager = project_malware_jobs
+    application.state.started_at = time.monotonic()
+    application.state.diagnostic_errors = []
 
     @application.exception_handler(RequestValidationError)
     async def validation_error_handler(_request: Request, exc: RequestValidationError) -> Response:
@@ -614,6 +620,21 @@ def create_app(
             status_code=exc.status_code,
             content={"detail": redact(exc.detail)},
             headers=exc.headers,
+        )
+
+    @application.exception_handler(Exception)
+    async def safe_internal_error_handler(request: Request, _exc: Exception) -> Response:
+        route = request.scope.get("route")
+        logging.getLogger("chinescan.errors").error(
+            "request_failed",
+            extra={
+                "request_id": getattr(request.state, "request_id", "unknown"),
+                "route": getattr(route, "path", "unmatched"),
+            },
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "The request could not be completed."},
         )
 
     @application.middleware("http")
@@ -683,6 +704,20 @@ def create_app(
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         route = request.scope.get("route")
+        if response.status_code >= 400 and request.url.path.startswith("/api/"):
+            error_ring = application.state.diagnostic_errors
+            error_ring.append(
+                {
+                    "error_code": f"http_{response.status_code}",
+                    "route": str(getattr(route, "path", "unmatched"))[:120],
+                    "request_id": request_id,
+                    "timestamp": datetime.now().astimezone().isoformat(),
+                    "message": "Request could not be completed."
+                    if response.status_code >= 500
+                    else "Request was rejected.",
+                }
+            )
+            del error_ring[:-50]
         logging.getLogger("chinescan.access").info(
             "request_complete",
             extra={
@@ -717,6 +752,68 @@ def create_app(
             sessions.revoke(token)
             raise HTTPException(status_code=401, detail="Authentication required.") from None
         return session
+
+    diagnostics_throttle = LoginThrottle(limit=12, window_seconds=60)
+
+    def allow_diagnostics(request: Request) -> None:
+        key = "diagnostics:" + (request.client.host if request.client else "unknown")
+        if not diagnostics_throttle.allowed(key):
+            raise HTTPException(
+                status_code=429, detail="Diagnostics rate limit reached; retry shortly."
+            )
+
+    @application.get("/api/health")
+    def health() -> dict[str, Any]:
+        return health_report(started_at=application.state.started_at, bind_address="127.0.0.1")
+
+    @application.get("/api/ready")
+    def ready(request: Request, _session: Session = Depends(current_session)) -> Response:  # noqa: B008
+        allow_diagnostics(request)
+        report = build_report(
+            settings=active_settings,
+            database_path=database_path,
+            credential_path=credentials,
+            frontend_dist=FRONTEND_DIST,
+            errors=application.state.diagnostic_errors,
+        )
+        readiness_ids = {
+            "config",
+            "credentials",
+            "database",
+            "directories",
+            "frontend",
+            "filesystem-policy",
+            "managed-malware",
+        }
+        checks = [dict(item) for item in report["checks"] if item["id"] in readiness_ids]
+        if report["operator_state"] != "active":
+            for item in checks:
+                if item["id"] == "credentials":
+                    item["state"] = "FAIL"
+                    item["detail"] = "Credential store is not active and schema-valid."
+                    item["action_hint"] = "Create or migrate the local operator credential store."
+        failures = any(item["state"] == "FAIL" for item in checks)
+        warnings = any(item["state"] == "WARN" for item in checks)
+        state = "failed" if failures else "degraded" if warnings else "ok"
+        response = JSONResponse(
+            {"state": state, "checks": checks, "allowed_roots": report["allowed_roots"]},
+            status_code=503 if failures else 200,
+        )
+        return response
+
+    @application.get("/api/diagnostics")
+    def diagnostics(
+        request: Request,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:
+        allow_diagnostics(request)
+        return build_report(
+            settings=active_settings,
+            database_path=database_path,
+            credential_path=credentials,
+            frontend_dist=FRONTEND_DIST,
+            errors=application.state.diagnostic_errors,
+        )
 
     def require_csrf(
         session: Session = Depends(current_session),  # noqa: B008
