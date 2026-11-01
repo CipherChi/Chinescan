@@ -260,6 +260,7 @@ def test_ready_healthy_returns_all_pass_and_diagnostics_matches_cli(
     frontend_dist = tmp_path / "frontend-dist"
     frontend_dist.mkdir()
     monkeypatch.setattr(web_app_module, "FRONTEND_DIST", frontend_dist)
+    monkeypatch.setattr(diagnostics, "_FRONTEND_DIST", frontend_dist)
     monkeypatch.setattr(diagnostics.socket, "create_connection", _port_is_free)
     monkeypatch.setattr(diagnostics, "_tool_version", lambda *_args: "fixture-version")
     monkeypatch.setattr(diagnostics, "_npm_lock_matches", lambda *_args: True)
