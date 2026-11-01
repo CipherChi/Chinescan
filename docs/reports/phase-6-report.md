@@ -174,13 +174,13 @@ Origin/Host, bounded-body, and rate-limit middleware. CLI import prints the prev
 
 | Exact command | Exit | Result |
 | --- | ---: | --- |
-| `uv run pytest tests/unit/test_github_import.py -q --basetemp <OS-temp-run-1>` | 0 | 66 passed in 100.76s. |
-| `uv run pytest tests/unit/test_github_import.py -q --basetemp <OS-temp-run-2>` | 0 | 66 passed in 101.97s. |
+| `uv run pytest tests/unit/test_github_import.py -q --basetemp <OS-temp-run-1>` | 0 | 66 passed in 204.53s after the cross-platform follow-up. |
+| `uv run pytest tests/unit/test_github_import.py -q --basetemp <OS-temp-run-2>` | 0 | 66 passed in 79.22s after the cross-platform follow-up. |
 | Focused short-path import | 0 | 1 passed in 6.51s. |
 | Focused timeout/cancel/byte-quota/file-count tests | 0 | 4 passed, including live-child termination on both quota dimensions. |
 | Focused bounded-queue and poisoned-path cleanup tests | 0 | 2 passed. |
 | Focused Git stderr/path canary test | 0 | 1 passed. |
-| `uv run pytest --cov=chinescan --cov-report=term --cov-fail-under=80 --basetemp <OS-temp>` | 0 | 407 passed, 5 deselected in 665.82s; 82.01% total coverage (80% required). `chinescan/core/github_import.py`: 90% (686 statements, 69 missed). |
+| `uv run pytest --cov=chinescan --cov-report=term --cov-fail-under=80 --basetemp <OS-temp>` | 0 | 407 passed, 5 deselected in 665.82s; 82.01% total coverage (80% required). This Windows run preceded the cross-platform-only test guard and ADS message adjustment. |
 | `uv run ruff check .` | 0 | All checks passed. |
 | `uv run ruff format --check .` | 0 | 158 files already formatted. |
 | `uv run mypy --strict chinescan` | 0 | No issues in 65 source files. |
@@ -191,3 +191,25 @@ Gitleaks was not run locally; PR CI remains the secret-scan gate. There is no fr
 integration, or private-repository support in this phase. GitHub-side content cannot be verified
 beyond the static checks described here; DNS and TLS rely on the operating system. The feature flag
 remains false by default. PR #13 remains a draft and must stay unmerged until Phase 6C is implemented.
+
+### Published commits and CI
+
+| Commit | Change |
+| --- | --- |
+| `50a979d` | Managed runner, preview/job service, route and CLI adapters. |
+| `046e964` | Runner, validation, security, CLI/API parity, and hostile fixture tests. |
+| `56fa4c3` | Git option verification and Phase 6B report. |
+| `be7daf6` | Linux CI fixes: skip the Windows-only short-path helper off Windows and clarify the ADS/Windows-name validation reason. |
+
+The first CI run on `56fa4c3` had one failing check: quality reported `2 failed, 399 passed, 6
+skipped, 5 deselected in 58.49s` at 80.22% coverage. Exact failures were
+`test_local_bare_repository_import_verifies_sha_and_removes_git` (`AttributeError: module 'ctypes'
+has no attribute 'WinDLL'` on Ubuntu) and
+`test_ads_is_detected_and_incomplete_when_a_tracked_file_vanishes` (expected `alternate data
+stream`; got `The repository contains an unsafe Windows file name.`). Commit `be7daf6` fixed both;
+the updated Windows import suite passed twice and the subsequent Linux quality job passed.
+
+On PR #13 head `be7daf6`, `gh pr checks 13 --watch` completed with every configured check passing:
+quality (`400 passed, 7 skipped, 5 deselected`; 80.23% coverage), dashboard build and browser
+acceptance, container, Windows managed malware worker acceptance, secret scan, CodeQL, and the
+Actions, JavaScript/TypeScript, and Python analysis jobs. The draft remains open and unmerged.
