@@ -87,6 +87,13 @@ for import. There are no frontend or E2E results or screenshots for this checkpo
 | `uv run bandit --severity-level medium -r chinescan` | 0 | No medium/high findings; 12 low findings remain; no `nosec` exclusions. |
 | `uv run python -m compileall -q chinescan` | 0 | Passed. |
 
-No frontend/E2E, Git flag/redirect verification, gitleaks, push, or pull request was completed for
-this checkpoint. Remaining work includes the full managed-copy lifecycle and all Phase 6 acceptance
-gates in the task request.
+No feature-specific frontend/E2E, Git clone-flag/redirect verification, or screenshot was completed.
+Git is `2.56.0.windows.4`; because there is no clone runner, the requested clone flags and redirect
+behavior were not tested. Gitleaks is unavailable locally; the PR's CI secret scan passed. The
+branch was pushed and opened as [draft PR #13](https://github.com/CipherChi/Chinescan/pull/13).
+Configured checks for the tested PR head `9783c1c0bd6eb8445c9fddf4dd3624ac7226c4f9` all passed:
+quality, dashboard build/browser acceptance, container, Windows managed-malware worker acceptance,
+secret scan, and CodeQL (Actions, JavaScript/TypeScript, Python, and aggregate CodeQL).
+
+Remaining work includes the full managed-copy lifecycle and all Phase 6 acceptance gates in the task
+request. The passing repository checks validate this partial code and do not make GitHub import usable.
