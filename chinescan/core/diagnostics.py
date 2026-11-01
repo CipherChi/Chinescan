@@ -340,10 +340,8 @@ def build_report(
     )
     frontend_root = Path(__file__).resolve().parents[2] / "frontend"
     node_modules = frontend_root / "node_modules"
-    lock_marker = node_modules / ".package-lock.json"
-    dependencies_ready = _npm_lock_matches(
-        frontend_root / "package-lock.json", lock_marker, node_modules.is_dir()
-    )
+    dependency_issues = _npm_dependency_issues(frontend_root / "package-lock.json", node_modules)
+    dependencies_ready = dependency_issues == []
     checks.append(
         _check(
             "frontend-dependencies",
@@ -351,8 +349,7 @@ def build_report(
             "PASS" if dependencies_ready else "WARN",
             "Local frontend dependency installation is present."
             if dependencies_ready
-            else "Frontend dependencies are missing or lack an npm lock marker; "
-            "no network check was run.",
+            else _frontend_dependency_detail(dependency_issues),
             "Run npm ci in the frontend directory when preparing a local build."
             if not dependencies_ready
             else "",
@@ -498,23 +495,95 @@ def _safe_error_summaries(errors: list[dict[str, str]]) -> list[dict[str, str]]:
     return summaries
 
 
-def _npm_lock_matches(package_lock: Path, marker: Path, modules_present: bool) -> bool:
-    if not modules_present or not package_lock.is_file() or not marker.is_file():
-        return False
+def _npm_dependency_issues(package_lock: Path, node_modules: Path) -> list[str] | None:
+    """Return mismatched top-level package names, or None when inputs are absent/invalid."""
+    if not node_modules.is_dir() or not package_lock.is_file():
+        return None
     try:
         expected = json.loads(package_lock.read_text(encoding="utf-8"))
-        installed = json.loads(marker.read_text(encoding="utf-8"))
         expected_packages = expected.get("packages", {})
-        installed_packages = installed.get("packages", {})
-        if expected.get("lockfileVersion") != installed.get("lockfileVersion"):
-            return False
-        return all(
-            installed_packages.get(name, {}).get("version") == package.get("version")
-            for name, package in expected_packages.items()
-            if name.startswith("node_modules/")
-        )
+        if not isinstance(expected_packages, dict):
+            return None
+        dependency_paths = [
+            name
+            for name in expected_packages
+            if isinstance(name, str)
+            and _is_top_level_node_module(name)
+            and _npm_package_applies(expected_packages[name])
+        ][:2000]
+        issues: list[str] = []
+        for package_path in dependency_paths:
+            package = expected_packages[package_path]
+            package_name = package_path.removeprefix("node_modules/")
+            if not isinstance(package, dict) or not isinstance(package.get("version"), str):
+                issues.append(package_name)
+                continue
+            installed_path = node_modules.joinpath(*package_path.split("/")[1:])
+            try:
+                installed_package = json.loads(
+                    (installed_path / "package.json").read_text(encoding="utf-8")
+                )
+                if (
+                    not isinstance(installed_package, dict)
+                    or installed_package.get("version") != package["version"]
+                ):
+                    issues.append(package_name)
+            except (OSError, TypeError, ValueError):
+                issues.append(package_name)
+        if len(expected_packages) > len(dependency_paths) and len(dependency_paths) == 2000:
+            issues.append("additional packages beyond check limit")
+        return issues
     except (OSError, TypeError, ValueError):
+        return None
+
+
+def _is_top_level_node_module(package_path: str) -> bool:
+    parts = package_path.split("/")
+    if len(parts) < 2 or parts[0] != "node_modules":
         return False
+    package_parts = parts[1:]
+    if any(part in {"", ".", ".."} or "\\" in part for part in package_parts):
+        return False
+    return len(package_parts) == (2 if package_parts[0].startswith("@") else 1)
+
+
+def _npm_package_applies(package: object) -> bool:
+    """Skip optional packages that npm excludes for the current OS or CPU."""
+    if not isinstance(package, dict) or not package.get("optional"):
+        return True
+    system_names = {"Windows": "win32", "Darwin": "darwin", "Linux": "linux"}
+    system = system_names.get(platform.system(), platform.system().lower())
+    machine_names = {
+        "AMD64": "x64",
+        "x86_64": "x64",
+        "aarch64": "arm64",
+        "i386": "ia32",
+    }
+    machine = machine_names.get(platform.machine(), platform.machine().lower())
+    for field, current in (("os", system), ("cpu", machine)):
+        constraints = package.get(field)
+        if not isinstance(constraints, list):
+            continue
+        positive = [
+            item for item in constraints if isinstance(item, str) and not item.startswith("!")
+        ]
+        negative = [
+            item[1:] for item in constraints if isinstance(item, str) and item.startswith("!")
+        ]
+        if positive and current not in positive or current in negative:
+            return False
+    return True
+
+
+def _frontend_dependency_detail(issues: list[str] | None) -> str:
+    if issues is None:
+        return "Frontend dependencies or package lock are unavailable; no network check was run."
+    if not issues:
+        return "Local frontend dependency installation is present."
+    return (
+        f"Frontend dependencies have {len(issues)} missing or mismatched packages; "
+        "no network check was run."
+    )
 
 
 def health_report(*, started_at: float, bind_address: str = "127.0.0.1") -> dict[str, Any]:

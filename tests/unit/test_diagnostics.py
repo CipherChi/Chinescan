@@ -15,7 +15,11 @@ from chinescan.cli.app import app as cli_app
 from chinescan.core import diagnostics
 from chinescan.core.accounts import Session
 from chinescan.core.config.settings import Settings
-from chinescan.core.diagnostics import _npm_lock_matches, build_report, health_report
+from chinescan.core.diagnostics import (
+    _npm_dependency_issues,
+    build_report,
+    health_report,
+)
 from chinescan.core.storage.sqlite import SQLiteRepository
 from chinescan.web import app as web_app_module
 from chinescan.web.app import create_app
@@ -163,25 +167,58 @@ def test_health_report_is_minimal_and_path_free() -> None:
     }
 
 
-def test_frontend_dependency_check_compares_installed_lock_marker(tmp_path: Path) -> None:
+def _write_frontend_install(tmp_path: Path, *, marker: bool = True) -> tuple[Path, Path]:
     package_lock = tmp_path / "package-lock.json"
-    marker = tmp_path / "node_modules" / ".package-lock.json"
-    marker.parent.mkdir()
-    expected = {
-        "lockfileVersion": 3,
-        "packages": {"node_modules/react": {"version": "19.3.1"}},
-    }
+    node_modules = tmp_path / "node_modules"
+    node_modules.mkdir()
+    expected = {"lockfileVersion": 3, "packages": {"node_modules/react": {"version": "19.3.1"}}}
     package_lock.write_text(json.dumps(expected), encoding="utf-8")
-    marker.write_text(json.dumps(expected), encoding="utf-8")
+    react = node_modules / "react"
+    react.mkdir()
+    (react / "package.json").write_text(
+        json.dumps({"name": "react", "version": "19.3.1"}), encoding="utf-8"
+    )
+    if marker:
+        (node_modules / ".package-lock.json").write_text(json.dumps(expected), encoding="utf-8")
+    return package_lock, node_modules
 
-    assert _npm_lock_matches(package_lock, marker, True)
 
-    mismatch = {
-        "lockfileVersion": 3,
-        "packages": {"node_modules/react": {"version": "19.0.0"}},
-    }
-    marker.write_text(json.dumps(mismatch), encoding="utf-8")
-    assert not _npm_lock_matches(package_lock, marker, True)
+def test_frontend_dependency_check_matching_install_passes(tmp_path: Path) -> None:
+    package_lock, node_modules = _write_frontend_install(tmp_path)
+    assert _npm_dependency_issues(package_lock, node_modules) == []
+
+
+def test_frontend_dependency_check_missing_package_warns_with_count(tmp_path: Path) -> None:
+    package_lock, node_modules = _write_frontend_install(tmp_path)
+    (node_modules / "react" / "package.json").unlink()
+    issues = _npm_dependency_issues(package_lock, node_modules)
+    assert issues == ["react"]
+    assert "1 missing or mismatched packages" in diagnostics._frontend_dependency_detail(issues)
+
+
+def test_frontend_dependency_check_version_mismatch_warns(tmp_path: Path) -> None:
+    package_lock, node_modules = _write_frontend_install(tmp_path)
+    (node_modules / "react" / "package.json").write_text(
+        json.dumps({"name": "react", "version": "19.0.0"}), encoding="utf-8"
+    )
+    assert _npm_dependency_issues(package_lock, node_modules) == ["react"]
+
+
+def test_frontend_dependency_check_missing_node_modules_warns(tmp_path: Path) -> None:
+    package_lock = tmp_path / "package-lock.json"
+    package_lock.write_text(json.dumps({"packages": {}}), encoding="utf-8")
+    assert _npm_dependency_issues(package_lock, tmp_path / "node_modules") is None
+
+
+def test_frontend_dependency_check_missing_lockfile_warns(tmp_path: Path) -> None:
+    node_modules = tmp_path / "node_modules"
+    node_modules.mkdir()
+    assert _npm_dependency_issues(tmp_path / "package-lock.json", node_modules) is None
+
+
+def test_frontend_dependency_check_does_not_require_npm_marker(tmp_path: Path) -> None:
+    package_lock, node_modules = _write_frontend_install(tmp_path, marker=False)
+    assert _npm_dependency_issues(package_lock, node_modules) == []
 
 
 def test_diagnostics_routes_are_loopback_guarded_and_authenticated(
@@ -263,7 +300,7 @@ def test_ready_healthy_returns_all_pass_and_diagnostics_matches_cli(
     monkeypatch.setattr(diagnostics, "_FRONTEND_DIST", frontend_dist)
     monkeypatch.setattr(diagnostics.socket, "create_connection", _port_is_free)
     monkeypatch.setattr(diagnostics, "_tool_version", lambda *_args: "fixture-version")
-    monkeypatch.setattr(diagnostics, "_npm_lock_matches", lambda *_args: True)
+    monkeypatch.setattr(diagnostics, "_npm_dependency_issues", lambda *_args: [])
     _override_session(application, "/api/ready")
     _override_session(application, "/api/diagnostics")
     config = tmp_path / "config.toml"
@@ -484,7 +521,7 @@ def test_doctor_local_probes_and_python_environment_mocks(tmp_path: Path, monkey
         return "" if command in {"node", "npm"} else "v1"
 
     monkeypatch.setattr(diagnostics, "_tool_version", tool_version)
-    monkeypatch.setattr(diagnostics, "_npm_lock_matches", lambda *_args: False)
+    monkeypatch.setattr(diagnostics, "_npm_dependency_issues", lambda *_args: None)
     connection_calls: list[tuple[str, int]] = []
 
     class LocalListener:

@@ -1270,3 +1270,30 @@ tests remained deselected because scanner binaries/signature data were unavailab
 execution or malware upload was performed.
 
 This report-only change creates a new SHA; its Actions runs must also complete before final delivery.
+
+### Doctor frontend dependency verification — 2026-11-01
+
+PR #12 was still open during this work, so changes were made on its existing
+`hardening/diagnostics` branch as directed by the repository task instructions. A fresh
+OS-temporary repository copy was installed with `npm ci --no-audit` in `frontend/` using npm
+12.1.0; npm reported 106 packages added. The install contained both
+`node_modules/.package-lock.json` and `node_modules/.bin`. Its marker omitted 44 platform-specific
+optional package entries present in the root lockfile, which caused the former marker comparison
+to return `False`. The new check compared installed package manifests against the root lockfile
+and reported `Frontend dependencies: PASS` for that install.
+
+The final local backend and quality gates on Windows with Python 3.12.10 were:
+
+| Exact command | Exit | Result |
+| --- | ---: | --- |
+| `uv run --locked --extra dev pytest --cov=chinescan --cov-report=term-missing --cov-fail-under=80 --basetemp <OS-temp-dir>` | 0 | 340 passed, 5 optional scanner tests deselected; 81.65% total coverage. |
+| `uv run --locked --extra dev ruff check .` | 0 | All checks passed. |
+| `uv run --locked --extra dev ruff format --check .` | 0 | 156 files already formatted. |
+| `uv run --locked --extra dev mypy --strict chinescan` | 0 | No issues in 64 source files. |
+| `uv run --locked --extra dev bandit --severity-level medium -r chinescan` | 0 | No medium or high findings; 12 low findings remain. |
+| `uv run python -m compileall -q chinescan` | 0 | Passed. |
+
+The full suite exposed a race in project malware scan completion: a terminal job record could be
+observed before its `malware_scan_finished` audit event was committed. The job and finish event are
+now written atomically; the existing assertion was retained. The final complete backend run above
+passed after that ordering fix.
