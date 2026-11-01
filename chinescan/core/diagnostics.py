@@ -45,6 +45,7 @@ _SAFE_RECORD_STATES = frozenset(
         "unknown",
     }
 )
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
 def _check(check_id: str, label: str, state: State, detail: str, hint: str = "") -> dict[str, str]:
@@ -262,7 +263,7 @@ def build_report(
             "Check local database availability and permissions." if not db_ok else "",
         )
     )
-    dist = frontend_dist or Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    dist = frontend_dist or _FRONTEND_DIST
     checks.append(
         _check(
             "frontend",

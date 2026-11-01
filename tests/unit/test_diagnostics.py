@@ -184,7 +184,9 @@ def test_frontend_dependency_check_compares_installed_lock_marker(tmp_path: Path
     assert not _npm_lock_matches(package_lock, marker, True)
 
 
-def test_diagnostics_routes_are_loopback_guarded_and_authenticated(tmp_path: Path) -> None:
+def test_diagnostics_routes_are_loopback_guarded_and_authenticated(
+    tmp_path: Path, monkeypatch
+) -> None:
     database = tmp_path / "data" / "records.sqlite3"
     credential = tmp_path / "private" / "operator.json"
     create_operator(credential, "analyst@example.test", "safe local password")
@@ -194,6 +196,9 @@ def test_diagnostics_routes_are_loopback_guarded_and_authenticated(tmp_path: Pat
         reports_dir=tmp_path / "reports",
     )
     settings.reports_dir.mkdir(parents=True)
+    frontend_dist = tmp_path / "frontend-dist"
+    frontend_dist.mkdir()
+    monkeypatch.setattr(web_app_module, "FRONTEND_DIST", frontend_dist)
     application = create_app(
         database,
         credential,
@@ -252,6 +257,9 @@ def test_ready_healthy_returns_all_pass_and_diagnostics_matches_cli(
         managed_storage=True,
         allowed_roots=[project_root],
     )
+    frontend_dist = tmp_path / "frontend-dist"
+    frontend_dist.mkdir()
+    monkeypatch.setattr(web_app_module, "FRONTEND_DIST", frontend_dist)
     monkeypatch.setattr(diagnostics.socket, "create_connection", _port_is_free)
     monkeypatch.setattr(diagnostics, "_tool_version", lambda *_args: "fixture-version")
     monkeypatch.setattr(diagnostics, "_npm_lock_matches", lambda *_args: True)
@@ -308,12 +316,15 @@ def test_ready_healthy_returns_all_pass_and_diagnostics_matches_cli(
 
 
 def test_ready_degraded_for_invalid_allowed_root_and_missing_optional_storage(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
     missing_root = tmp_path / "configured-but-missing"
     application, _settings, _database, _credential = _app_fixture(
         tmp_path, allowed_roots=[missing_root]
     )
+    frontend_dist = tmp_path / "frontend-dist"
+    frontend_dist.mkdir()
+    monkeypatch.setattr(web_app_module, "FRONTEND_DIST", frontend_dist)
     _override_session(application, "/api/ready")
 
     with TestClient(
@@ -551,6 +562,9 @@ def test_doctor_is_read_only_and_does_not_make_remote_socket_calls(
         raise OSError("fixture port is free")
 
     monkeypatch.setattr(diagnostics.socket, "create_connection", local_socket_guard)
+    frontend_dist = tmp_path / "frontend-dist"
+    frontend_dist.mkdir()
+    monkeypatch.setattr(diagnostics, "_FRONTEND_DIST", frontend_dist)
     before = _tree_digest(tmp_path)
     result = CliRunner().invoke(
         cli_app,
