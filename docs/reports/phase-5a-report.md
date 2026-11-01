@@ -4,7 +4,7 @@ Verification ran on `hardening/diagnostics`. Backend tests used pytest basetemp 
 
 ## Results
 
-- Backend: `uv run pytest --cov=chinescan --cov-report=term-missing --cov-fail-under=80` — 335 passed, 5 deselected by the existing optional scanner fixture policy; overall coverage 81.62%; `chinescan/core/diagnostics.py` coverage 92% (186 statements, 14 missed).
+- Backend: `uv run pytest --cov=chinescan --cov-report=term-missing --cov-fail-under=80` — 335 passed, 5 deselected by the existing optional scanner fixture policy; overall coverage 81.62%; `chinescan/core/diagnostics.py` coverage 93% (186 statements, 14 missed).
 - Focused diagnostics tests: 15 passed twice before the final full-suite runs.
 - Ruff check and format check passed; strict mypy passed for 64 source files; Bandit `-ll` found 0 medium/high issues; compileall passed.
 - Frontend typecheck and build passed. Vitest passed three consecutive runs: 44 tests each.
@@ -45,3 +45,4 @@ Doctor check IDs: `config`, `credentials`, `filesystem-policy`, `directories`, `
 - Offline: `%TEMP%\chinescan-phase5a-status-screenshots\system-status-offline.png`
 
 The offline browser test blocks the three API requests from the page, presses **Check now**, verifies the offline state, then removes the routes and checks recovery. The separate unit test exercises retry timing and its cap.
+
