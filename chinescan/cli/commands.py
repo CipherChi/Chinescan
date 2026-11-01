@@ -564,6 +564,80 @@ def _settings() -> Settings:
         raise typer.Exit(code=exc.exit_code) from exc
 
 
+def _github_unavailable(json_output: bool) -> None:
+    settings = _settings()
+    code = "feature_disabled" if not settings.github_import_enabled else "import_unavailable"
+    message = (
+        "Public GitHub import is disabled. Set github_import_enabled = true in config.toml."
+        if code == "feature_disabled"
+        else "The GitHub import runner is not available in this build."
+    )
+    typer.echo(
+        json.dumps({"code": code, "message": message}) if json_output else f"{code}: {message}",
+        err=True,
+    )
+    raise typer.Exit(code=2)
+
+
+def github_preview(
+    url: str = typer.Argument(...),
+    ref: str | None = typer.Option(None, "--ref"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Preview a public repository import without network access."""
+    from chinescan.core.github_import import GitHubImportError, validate_github_url, validate_ref
+
+    if not _settings().github_import_enabled:
+        _github_unavailable(json_output)
+    try:
+        source = validate_github_url(url)
+        normalized_ref = validate_ref(ref)
+    except GitHubImportError as exc:
+        typer.echo(
+            json.dumps({"code": exc.code, "message": str(exc)}) if json_output else str(exc),
+            err=True,
+        )
+        raise typer.Exit(code=2) from exc
+    _github_unavailable(json_output)
+    typer.echo(json.dumps({"url": source.canonical_url, "ref": normalized_ref}))
+
+
+def github_import(
+    url: str = typer.Argument(...),
+    name: str = typer.Option(..., "--name"),
+    ref: str | None = typer.Option(None, "--ref"),
+    yes: bool = typer.Option(False, "--yes"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Import a public repository after explicit confirmation."""
+    if not _settings().github_import_enabled:
+        _github_unavailable(json_output)
+    typer.echo(f"Preview: {url} (depth 1, no submodules, no LFS; 500 MiB, 50,000 files)")
+    if not yes:
+        typer.echo("Re-run with --yes to confirm this import.", err=True)
+        raise typer.Exit(code=2)
+    del name, ref
+    _github_unavailable(json_output)
+
+
+def github_status(
+    job_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show a GitHub import job status."""
+    del job_id
+    _github_unavailable(json_output)
+
+
+def github_cancel(
+    job_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Cancel a GitHub import job."""
+    del job_id
+    _github_unavailable(json_output)
+
+
 config_app = typer.Typer(help="Initialize and validate local configuration.")
 
 

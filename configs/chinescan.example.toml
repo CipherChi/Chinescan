@@ -16,5 +16,9 @@ log_level = "INFO"
 # per_file_seconds = 2.0
 # job_deadline_seconds = 300
 #
-# GitHub importing remains disabled in this phase.
+# Public GitHub import is disabled by default. Enabling requires the Phase 6 managed-copy backend.
 # github_import_enabled = false
+# github_import_timeout_seconds = 120
+# github_import_max_bytes = 524288000
+# github_import_max_files = 50000
+# github_import_max_projects = 20

@@ -57,3 +57,36 @@ mocked; no live domain was assessed.
 - [x] Python 3.12, Ruff, strict mypy, tests/coverage, pip-audit, lock, schema, Compose, and Docker
   checks pass.
 - [ ] Broad external scanner adapters remain deferred pending a separate scope and traffic review.
+
+## Public GitHub import work — 2026-11-01
+
+This is an incomplete implementation checkpoint on `hardening/github-import`, based on main at
+`1548986`. The required Phase 5A report cleanup was committed separately as `82b2989`; the Phase 1
+report now matches commit `ac1a6f4`, and the moved notes are in `phase-5a-report.md`.
+
+Implemented in this checkpoint: a pure ASCII URL/ref validator with rejection coverage for unsafe
+schemes, hosts, credentials, ports, encoded path separators/dots, Unicode, extra path segments,
+malformed owners/repositories, and Git reference syntax; bounded configuration fields; authenticated
+API paths and CLI commands that return `feature_disabled` while the default flag is false; and a
+diagnostics check for the flag and local Git availability. No network or subprocess is used by URL
+preview validation.
+
+The feature is not complete and must remain disabled. With the flag set true, API/CLI import paths
+return `import_unavailable`; there is no clone runner, background job store, session-bound preview
+registry, project creation/removal integration, or frontend dialog. Therefore clone options and
+redirect behavior have not been verified, and this branch must not be enabled or treated as ready
+for import. There are no frontend or E2E results or screenshots for this checkpoint.
+
+| Exact command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest tests/unit/test_github_import.py tests/unit/test_projects.py::test_github_import_api_is_stably_disabled_by_default -q --basetemp <OS-temp>` | 0 | 41 passed. |
+| `uv run pytest --cov=chinescan --cov-report=term --cov-fail-under=80 --basetemp <OS-temp>` | 0 | 381 passed, 5 deselected; 81.62% total coverage. |
+| `uv run ruff check .` | 0 | All checks passed. |
+| `uv run ruff format --check .` | 0 | 158 files already formatted. |
+| `uv run mypy --strict chinescan` | 0 | No issues in 65 source files. |
+| `uv run bandit --severity-level medium -r chinescan` | 0 | No medium/high findings; 12 low findings remain; no `nosec` exclusions. |
+| `uv run python -m compileall -q chinescan` | 0 | Passed. |
+
+No frontend/E2E, Git flag/redirect verification, gitleaks, push, or pull request was completed for
+this checkpoint. Remaining work includes the full managed-copy lifecycle and all Phase 6 acceptance
+gates in the task request.

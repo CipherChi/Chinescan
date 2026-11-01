@@ -248,3 +248,11 @@ Use the repository's uv-managed environment for development commands. If `uv run
 # EVTX log support
 
 EVTX files are detected by project log suggestions and shown as unsupported until a parser is available. A future parser should use a bounded, read-only implementation: accept only regular files approved by filesystem policy, cap file bytes, records, nesting, and elapsed time, parse from a bounded stream without executing embedded content, and return a partial result with skipped counts when a cap is reached. It must not upload samples or write beside the source file.
+
+# GitHub imports
+
+Public GitHub imports are disabled and not yet implemented. Keep `github_import_enabled = false`.
+The URL validator accepts only public `github.com` repository URLs, and authenticated preview/import
+API and CLI entry points fail closed. Do not set the flag to true: the managed clone runner, project
+lifecycle, and UI flow are not present yet. No import request may run repository content or use
+private-repository credentials.

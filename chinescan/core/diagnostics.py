@@ -407,6 +407,22 @@ def build_report(
         "soft": len(policy_paths(loaded)[1]),
         "extra": len(loaded.extra_denied_paths),
     }
+    git_available = shutil.which("git") is not None
+    checks.append(
+        _check(
+            "github-import",
+            "GitHub import",
+            "WARN" if loaded.github_import_enabled and not git_available else "PASS",
+            "Import is enabled and Git is available."
+            if loaded.github_import_enabled and git_available
+            else "Import is enabled but Git is unavailable."
+            if loaded.github_import_enabled
+            else "Import is disabled; Git availability is informational only.",
+            "Install Git to use public repository imports."
+            if loaded.github_import_enabled and not git_available
+            else "",
+        )
+    )
     report: dict[str, Any] = {
         "status": "ok",
         "app_name": "ChineScan",
@@ -425,6 +441,7 @@ def build_report(
         "deny_list_tiers": deny_counts,
         "storage_size_bucket": size_bucket,
         "github_import_enabled": loaded.github_import_enabled,
+        "github_import_git_available": git_available,
         "scan_bounds": {
             "max_files": loaded.max_files,
             "max_total_bytes": loaded.max_total_bytes,

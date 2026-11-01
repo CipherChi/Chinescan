@@ -138,6 +138,13 @@ uv run chinescan --reports-dir "$HOME/chinescan-reports" code .
 
 The default SQLite database and report locations are local user-data paths. Config initialization never writes secret values; logs redact secret-like values.
 
+## Public GitHub imports
+
+Public repository imports are not available yet. `github_import_enabled` defaults to `false`; the
+current CLI and authenticated API fail closed with `feature_disabled`. Do not enable the setting
+until the managed-copy import runner is delivered. Imports, when implemented, will be limited to
+public GitHub repositories and intended for use inside a VM before scanning.
+
 ## Security and responsible use
 
 Use ChineScan only on assets and data you own or are explicitly authorized to assess. Code and indicator scans operate on local files; code scanning does not execute project code. The indicator scanner is offline. Domain posture checks perform network activity and require explicit target authorization. Optional package audit integrations can send dependency metadata to advisory services only when explicitly enabled with `--allow-network-audits`.

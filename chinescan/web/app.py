@@ -219,6 +219,18 @@ class CaseStatusRequest(BaseModel):
     status: CaseStatus
 
 
+class GitHubPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(min_length=1, max_length=300)
+    ref: str | None = Field(default=None, max_length=100)
+
+
+class GitHubImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    preview_id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+
+
 class CodeJobCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: str = Field(min_length=1, max_length=80)
@@ -825,6 +837,50 @@ def create_app(
         if not csrf_header or not secrets.compare_digest(session.csrf_token, csrf_header):
             raise HTTPException(status_code=403, detail="CSRF validation failed.")
         return session
+
+    def github_import_unavailable() -> None:
+        if not active_settings.github_import_enabled:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "feature_disabled", "message": "GitHub import is disabled."},
+            )
+        raise HTTPException(
+            status_code=501,
+            detail={"code": "import_unavailable", "message": "GitHub import is unavailable."},
+        )
+
+    @application.post("/api/github/previews")
+    def github_preview(
+        _payload: GitHubPreviewRequest,
+        _request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> None:
+        github_import_unavailable()
+
+    @application.post("/api/github/imports", status_code=202)
+    def github_import(
+        _payload: GitHubImportRequest,
+        _request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> None:
+        github_import_unavailable()
+
+    @application.get("/api/github/imports/{job_id}")
+    def github_import_status(
+        job_id: str,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> None:
+        del job_id
+        github_import_unavailable()
+
+    @application.post("/api/github/imports/{job_id}/cancel")
+    def github_import_cancel(
+        job_id: str,
+        _request: Request,
+        _session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> None:
+        del job_id
+        github_import_unavailable()
 
     auth_lockout = ProgressiveLockout()
 
