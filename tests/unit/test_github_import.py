@@ -74,6 +74,8 @@ def _raw_object(bare: Path, kind: str, body: bytes) -> str:
 
 
 def _windows_short_path(path: Path) -> Path:
+    if os.name != "nt":
+        pytest.skip("8.3 short-path aliases are specific to Windows.")
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     get_short_path = kernel.GetShortPathNameW
     get_short_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]

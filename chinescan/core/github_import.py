@@ -919,7 +919,12 @@ class GitHubImportService:
 
     @staticmethod
     def _validate_entry_name(name: str) -> None:
-        if ":" in name or name.endswith((".", " ")) or _DEVICE.fullmatch(name):
+        if ":" in name:
+            raise GitHubImportError(
+                "unsafe_entries",
+                "The repository contains an alternate data stream or unsafe Windows file name.",
+            )
+        if name.endswith((".", " ")) or _DEVICE.fullmatch(name):
             raise GitHubImportError(
                 "unsafe_entries", "The repository contains an unsafe Windows file name."
             )
