@@ -26,6 +26,8 @@ def configure(
 
 
 app.command("version")(commands.version)
+app.command("doctor")(commands.doctor)
+app.command("status")(commands.status)
 app.add_typer(commands.config_app, name="config")
 app.command("code")(commands.code_scan)
 app.command("logs")(commands.logs_ingest)

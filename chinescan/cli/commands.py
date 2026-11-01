@@ -497,6 +497,60 @@ def configure_settings(
     _cli_reports_dir = reports_dir
 
 
+def doctor(
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the full diagnostics report as JSON."
+    ),
+) -> None:
+    """Check local ChineScan readiness without changing local state."""
+    from chinescan.core.diagnostics import build_report
+
+    report = build_report(
+        config_path=_cli_config_path,
+        database_path=_cli_database_path,
+        reports_dir=_cli_reports_dir,
+    )
+    _emit_diagnostics(report, json_output, short=False)
+
+
+def status(
+    json_output: bool = typer.Option(False, "--json", help="Emit the diagnostics summary as JSON."),
+) -> None:
+    """Show a short summary of local ChineScan readiness."""
+    from chinescan.core.diagnostics import build_report
+
+    report = build_report(
+        config_path=_cli_config_path,
+        database_path=_cli_database_path,
+        reports_dir=_cli_reports_dir,
+    )
+    _emit_diagnostics(report, json_output, short=True)
+
+
+def _emit_diagnostics(report: dict[str, object], json_output: bool, *, short: bool) -> None:
+    import json
+
+    checks = report["checks"]
+    if not isinstance(checks, list):
+        raise typer.Exit(code=2)
+    selected = checks[:5] if short else checks
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {"status": report["status"], "checks": selected} if short else report, indent=2
+            )
+        )
+    else:
+        for check in selected:
+            if isinstance(check, dict):
+                typer.echo(f"[{check['state']}] {check['label']}: {check['detail']}")
+                if check.get("action_hint"):
+                    typer.echo(f"  Action: {check['action_hint']}")
+        typer.echo(f"Summary: {report['status']} ({len(checks)} checks)")
+    states = {str(item.get("state")) for item in checks if isinstance(item, dict)}
+    raise typer.Exit(code=2 if "FAIL" in states else 1 if "WARN" in states else 0)
+
+
 def _settings() -> Settings:
     options: dict[str, object] = {}
     if _cli_database_path is not None:
