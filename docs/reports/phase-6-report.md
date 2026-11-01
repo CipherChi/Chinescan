@@ -97,3 +97,97 @@ secret scan, and CodeQL (Actions, JavaScript/TypeScript, Python, and aggregate C
 
 Remaining work includes the full managed-copy lifecycle and all Phase 6 acceptance gates in the task
 request. The passing repository checks validate this partial code and do not make GitHub import usable.
+
+## Phase 6B Git option verification and implementation checkpoint — 2026-11-01
+
+Git verification was performed before editing the runner, using Git `2.56.0.windows.4`, a local
+runtime-created bare repository, and temporary directories under the OS temp directory.
+
+| Option / behavior | Result | Evidence / decision |
+| --- | --- | --- |
+| `--depth 1` | Supported; local-path clone behavior differs | Git accepted it, then warned `--depth is ignored in local clones; use file:// instead`. HTTPS server behavior depends on the server. |
+| `--single-branch` | Supported | Accepted in the successful local clone. |
+| `--no-tags` | Supported | Accepted in the successful local clone. |
+| `--no-recurse-submodules` | Supported | Accepted in the successful local clone. |
+| `--filter=blob:limit=16m` | Supported with a server caveat | Git accepted it, then warned the filter is ignored for a local-path clone. Partial clone filtering only takes effect when the remote server supports it. |
+| `-c core.symlinks=false` | Supported | `git -c core.symlinks=false --version` exited 0. |
+| `-c core.hooksPath=<empty dir>` | Supported | `git -c core.hooksPath=<temp empty dir> --version` exited 0. |
+| `-c protocol.allow=never`, `-c protocol.https.allow=always` | Supported | Both assignments parsed; production `GIT_ALLOW_PROTOCOL=https` rejected a local bare repo with `fatal: transport 'file' not allowed`. |
+| Test-only local `file://` transport | Supported only with explicit test override | The verification clone succeeded with `protocol.file.allow=always` and `GIT_ALLOW_PROTOCOL=https:file`. Production code uses HTTPS only. The source URL validator continues rejecting `file://`. |
+| `-c core.fsmonitor=false` | Supported | Config assignment parsed successfully. |
+| `-c credential.helper=` | Supported | Config assignment parsed successfully; environment is constructed from the allowlisted keys rather than inherited. |
+| `-c http.followRedirects=false` | Supported; chosen setting | Config assignment parsed. A local HTTP server returned 302 to a second local host; Git exited 128 with HTTP 302 and the destination recorded zero requests. Redirects are disabled to prevent moving fetches to an unvalidated host. |
+| `-c advice.detachedHead=false` | Supported | Config assignment parsed successfully. |
+| `GIT_TERMINAL_PROMPT=0` | Supported | Included in the tested environment. |
+| `GIT_LFS_SKIP_SMUDGE=1` | Supported | Included in the tested environment. |
+| `GIT_CONFIG_NOSYSTEM=1` | Supported | Included in the tested environment. |
+| `GIT_CONFIG_GLOBAL=NUL` | Supported on Windows | Included in the tested environment; `NUL` is Windows' null device. |
+| `GIT_ALLOW_PROTOCOL=https` | Supported | Local `file` transport was rejected. The test-only seam adds `file` and a per-command `protocol.file.allow=always`; it is not reachable through production URL validation. |
+
+## Phase 6B managed runner, preview, jobs, and verification — 2026-11-01
+
+### Failure diagnostics and root fixes
+
+The two failures reported for the normal bare-repository import had different causes and were
+diagnosed independently before their fixes:
+
+| Failure | Diagnostic evidence before the fix | Cause and fix |
+| --- | --- | --- |
+| `quota_exceeded` | At the failing poll the configured worktree cap was `524,288,000` bytes and `50,000` files. The ordinary repository had about 27–30 KB of `.git` metadata and zero worktree files while checkout was still in progress. | A race in the old size walk translated a transient `OSError` while Git was writing/removing entries into `cap + 1`, falsely reporting quota exceeded. Worktree bytes and `.git` bytes are now measured separately; the worktree is bounded by the configured cap and `.git` has its own bounded allowance (8–64 MiB, selected from one quarter of the configured cap within those bounds). The poller kills the child if either component or the combined cap-plus-allowance is exceeded. Verification applies the project content cap separately from the metadata allowance. |
+| `unsafe_entries` | The reported candidate was an ordinary nested `.git` directory under the long Windows temp path; it was not an 8.3 alias. No reserved/trailing/ADS name rule fired. `.git`, `HEAD`, `config`, and `hooks` are allowed Git metadata names during verification. | `_prove_managed_target` incorrectly required every target's parent to be the managed import directory, so it rejected the nested `.git` directory. Containment now canonicalizes both managed storage and every candidate with the same `Path.resolve`, normalized case/path, and NFC Unicode function before comparing. Reparse checks inspect the managed directory itself and entries inside a clone, not temp-directory ancestors. |
+| `incomplete` observed after the containment fix | Removal raised Windows `WinError 5` on a read-only `.git/objects/pack/*.idx` file. | Git metadata and failed clone cleanup now use a containment-checked remover that clears read-only attributes before retrying deletion and does not traverse links/reparse points. |
+
+The short-path regression now resolves the temporary directory through `GetShortPathNameW`, runs a
+normal bare-repository import from that alias, and gives the worktree cap only eight bytes above
+the content size. It passed, including `.git` removal and recorded commit SHA.
+
+### Hostile fixture results
+
+All fixtures are built at runtime. The local bare repository uses the guarded test-only `file://`
+transport; production URL validation still rejects it.
+
+| Fixture | Result |
+| --- | --- |
+| Normal repository, including a read-only `.git` pack and a hook canary | Succeeded; SHA and fetch time recorded, `.git` removed, hook canary absent. |
+| Pinned full commit SHA | Succeeded with shallow fetch; the recorded SHA matched the requested commit. |
+| Committed symlink | Neutralized by `core.symlinks=false`; accepted as ordinary file content, with no link created. |
+| Hostile `.git/hooks` content | Never executed; canary was not created. |
+| Submodule entry | Not fetched because recurse-submodules is disabled. |
+| LFS pointer | Pointer remained ordinary content; LFS smudge was skipped. |
+| Oversized worktree file / too many files | Failed with `quota_exceeded`; clone cleanup removed the target. |
+| Windows reserved name, trailing dot, ADS | Failed with `unsafe_entries`. Runtime raw-tree objects are used because Git for Windows' normal index rejects those names before they can become fixtures. |
+| Overlong nested path | Failed with `unsafe_entries`; runtime raw tree objects bypass the host filesystem's inability to create the fixture. |
+| Symlink/reparse entry and forced outside-root resolution | Failed with `unsafe_entries`; outside canary remained unchanged. |
+| File removed during verification | Job became `incomplete` with `quarantined_or_missing_files`. |
+| Timeout / explicit cancel / quota breach during a live child | Each ended in its expected stable code and the started child PID was no longer running. |
+| Poisoned clone target pointing outside managed storage | Cleanup refused it; outside canary remained unchanged. |
+| Git stderr containing a path and canary | Response and captured logs contained neither. |
+| Test-only file transport without the test guard | Refused. |
+
+Preview is local-only and makes no network or subprocess call. Preview IDs are session-bound,
+expire after ten minutes, and are single-use. The bounded queue accepts four queued jobs and a
+single worker runs jobs serially. API controls remain behind the existing authentication, CSRF,
+Origin/Host, bounded-body, and rate-limit middleware. CLI import prints the preview before requiring
+`--yes`; exit codes remain 0 for success and 2 for failure.
+
+### Local verification
+
+| Exact command | Exit | Result |
+| --- | ---: | --- |
+| `uv run pytest tests/unit/test_github_import.py -q --basetemp <OS-temp-run-1>` | 0 | 66 passed in 100.76s. |
+| `uv run pytest tests/unit/test_github_import.py -q --basetemp <OS-temp-run-2>` | 0 | 66 passed in 101.97s. |
+| Focused short-path import | 0 | 1 passed in 6.51s. |
+| Focused timeout/cancel/byte-quota/file-count tests | 0 | 4 passed, including live-child termination on both quota dimensions. |
+| Focused bounded-queue and poisoned-path cleanup tests | 0 | 2 passed. |
+| Focused Git stderr/path canary test | 0 | 1 passed. |
+| `uv run pytest --cov=chinescan --cov-report=term --cov-fail-under=80 --basetemp <OS-temp>` | 0 | 407 passed, 5 deselected in 665.82s; 82.01% total coverage (80% required). `chinescan/core/github_import.py`: 90% (686 statements, 69 missed). |
+| `uv run ruff check .` | 0 | All checks passed. |
+| `uv run ruff format --check .` | 0 | 158 files already formatted. |
+| `uv run mypy --strict chinescan` | 0 | No issues in 65 source files. |
+| `uv run bandit --severity-level medium -r chinescan` | 0 | No medium/high findings; 17 low findings. A narrow inline B603 comment documents the validated Git argv, canonical URL, fixed options, and confined UUID target. Bandit reports the rule was not triggered by the injected process-factory call. |
+| `uv run python -m compileall -q chinescan` | 0 | Passed. |
+
+Gitleaks was not run locally; PR CI remains the secret-scan gate. There is no frontend, project
+integration, or private-repository support in this phase. GitHub-side content cannot be verified
+beyond the static checks described here; DNS and TLS rely on the operating system. The feature flag
+remains false by default. PR #13 remains a draft and must stay unmerged until Phase 6C is implemented.
