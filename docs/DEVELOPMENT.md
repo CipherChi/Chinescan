@@ -40,6 +40,46 @@ uv run chinescan compare BASELINE_SCAN_ID CURRENT_SCAN_ID
 uv run chinescan trends --days 30 --format json
 ```
 
+### Local diagnostics
+
+Run `uv run chinescan doctor` for the full read-only local environment report, or
+`uv run chinescan doctor --json` for machine-readable output. `uv run chinescan status` prints a
+short summary; both commands accept `--json`. Exit status is `0` when all checks pass, `1` when
+one or more checks warn, and `2` when a check fails. Output uses ASCII `[PASS]`, `[WARN]`, and
+`[FAIL]` markers and honors `NO_COLOR`. Doctor does not access the network, modify configuration,
+write to the database, or change listeners. Its network-backed optional features (`pip-audit`,
+`npm audit`, and authorized domain posture checks) are listed as opt-in.
+
+The loopback dashboard exposes unauthenticated `GET /api/health` with only `status`, `app_name`,
+`version`, `uptime_seconds`, `bind_address`, and `timestamp`. Authenticated `GET /api/ready`
+returns `{state, checks, allowed_roots}`; checks have `id`, `label`, `state`, `detail`, and
+`action_hint`. It returns HTTP 200 for healthy or degraded status and 503 when a check fails.
+Authenticated `GET /api/diagnostics` returns platform/runtime and application versions, config and
+storage states, operator state, root and deny-list counts, feature flags, scan bounds, record counts,
+the shared checks, and up to 50 recent redacted error summaries. Readiness and diagnostics are
+rate-limited. All routes retain loopback Host and same-origin protections.
+
+The System status page offers **Check now** to refresh health, readiness, and diagnostics immediately.
+Automatic healthy polling runs every 30 seconds. After a connection failure, retry intervals grow
+exponentially from 1 second and cap at 60 seconds; a successful response resets the retry interval.
+An unauthenticated browser session returns to operator login before detailed status panels appear.
+
+Doctor checks Python/uv and Node/npm availability, Python environment integrity, frontend dependency
+lock consistency and build presence, local ports 5173 and 8765, credentials schema, config and
+database access, required directories, filesystem policy, offline readiness, and managed malware
+storage. Fix hints accompany non-passing checks: install or repair the named tool/dependencies,
+restore a valid credential/config, repair local database access, create required directories,
+correct allowed roots or deny entries, or inspect an existing port listener without stopping it.
+Missing managed malware storage is a warning; project scans do not require it.
+
+Diagnostics payloads use logical labels and counts rather than absolute internal paths. Credential
+contents, tokens, request bodies, and stack traces are never included. Error summaries contain a
+stable code, route, request ID, timestamp, and redacted message; the in-memory ring retains at most
+50 entries. If diagnostics cannot load, verify the loopback service and local configuration first,
+then run `uv run chinescan doctor --json` with the same selected config and database options used by
+the service. For browser access, confirm that the local operator session is active; the health route
+is public, while readiness and diagnostics require authentication.
+
 Dashboard frontend development additionally requires Node.js 22.12+ and npm. The frontend uses
 React, TypeScript, Vite, Vitest, Testing Library, and Playwright; install its locked dependencies
 with `npm ci --no-audit` from `frontend/`. Run the backend explicitly with

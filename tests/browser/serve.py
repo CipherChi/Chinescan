@@ -91,11 +91,13 @@ def main() -> None:
     parser.add_argument("--hold-scan-until-expiry", action="store_true")
     parser.add_argument("--empty-account", action="store_true")
     parser.add_argument("--projects-enabled", action="store_true")
+    parser.add_argument("--missing-managed-storage", action="store_true")
     args = parser.parse_args()
     operator_email, operator_password = (
         (None, None) if args.empty_account else _read_test_credentials()
     )
     args.data_dir.mkdir(parents=True, exist_ok=False)
+    (args.data_dir / "reports").mkdir()
     database = args.data_dir / "records.sqlite3"
     credentials = args.data_dir / "operator.json"
     project = args.data_dir.parent / f"{args.data_dir.name}-approved-project"
@@ -179,6 +181,8 @@ def main() -> None:
         encoding="utf-8",
     )
     managed_root = args.data_dir.parent / f"{args.data_dir.name}-managed-malware"
+    if not args.missing_managed_storage:
+        managed_root.mkdir(parents=True, exist_ok=True)
     if operator_email is not None and operator_password is not None:
         create_operator(credentials, operator_email, operator_password)
 
@@ -240,7 +244,7 @@ def main() -> None:
         settings=Settings(
             _env_file=None,
             database_path=database,
-            malware_managed_directory=managed_root,
+            malware_managed_directory=None if args.missing_managed_storage else managed_root,
             allowed_roots=[project] if args.projects_enabled else [],
             max_files=1,
             malware_max_file_bytes=100,
