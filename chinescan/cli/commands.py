@@ -24,6 +24,7 @@ from chinescan.core.fs_policy import (
     decide_path,
     policy_paths,
 )
+from chinescan.core.github_import import GitHubImportService
 from chinescan.core.log_locations import LogLocationService
 from chinescan.core.logging.redaction import redact
 from chinescan.core.malware_ack import MalwareAcknowledgementError, MalwareAcknowledgements
@@ -564,19 +565,42 @@ def _settings() -> Settings:
         raise typer.Exit(code=exc.exit_code) from exc
 
 
-def _github_unavailable(json_output: bool) -> None:
-    settings = _settings()
-    code = "feature_disabled" if not settings.github_import_enabled else "import_unavailable"
+def _github_service(
+    settings: Settings,
+) -> tuple[SQLiteRepository, GitHubImportService]:
+
+    repository = SQLiteRepository(settings.database_path)
+    service = GitHubImportService(
+        repository,
+        settings,
+        settings.database_path.expanduser().resolve(strict=False).parent / "github-imports",
+    )
+    return repository, service
+
+
+def _github_emit(value: dict[str, object], json_output: bool) -> None:
+    if json_output:
+        typer.echo(json.dumps(value))
+    else:
+        for key, item in value.items():
+            if item is not None:
+                typer.echo(f"{key}: {item}")
+
+
+def _github_error(exc: Exception, json_output: bool) -> None:
+    from chinescan.core.github_import import GitHubImportError
+
+    code = exc.code if isinstance(exc, GitHubImportError) else "import_unavailable"
     message = (
-        "Public GitHub import is disabled. Set github_import_enabled = true in config.toml."
-        if code == "feature_disabled"
-        else "The GitHub import runner is not available in this build."
+        str(exc)
+        if isinstance(exc, GitHubImportError)
+        else "The GitHub import could not be completed."
     )
     typer.echo(
         json.dumps({"code": code, "message": message}) if json_output else f"{code}: {message}",
         err=True,
     )
-    raise typer.Exit(code=2)
+    raise typer.Exit(code=2) from exc
 
 
 def github_preview(
@@ -585,21 +609,22 @@ def github_preview(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Preview a public repository import without network access."""
-    from chinescan.core.github_import import GitHubImportError, validate_github_url, validate_ref
+    from chinescan.core.github_import import GitHubImportError
 
-    if not _settings().github_import_enabled:
-        _github_unavailable(json_output)
-    try:
-        source = validate_github_url(url)
-        normalized_ref = validate_ref(ref)
-    except GitHubImportError as exc:
-        typer.echo(
-            json.dumps({"code": exc.code, "message": str(exc)}) if json_output else str(exc),
-            err=True,
+    settings = _settings()
+    if not settings.github_import_enabled:
+        _github_error(
+            GitHubImportError("feature_disabled", "Public GitHub import is disabled."),
+            json_output,
         )
-        raise typer.Exit(code=2) from exc
-    _github_unavailable(json_output)
-    typer.echo(json.dumps({"url": source.canonical_url, "ref": normalized_ref}))
+    repository, service = _github_service(settings)
+    try:
+        preview = service.preview("cli", url, ref)
+        _github_emit(preview, json_output)
+    except Exception as exc:
+        _github_error(exc, json_output)
+    finally:
+        repository.close()
 
 
 def github_import(
@@ -610,14 +635,40 @@ def github_import(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Import a public repository after explicit confirmation."""
-    if not _settings().github_import_enabled:
-        _github_unavailable(json_output)
-    typer.echo(f"Preview: {url} (depth 1, no submodules, no LFS; 500 MiB, 50,000 files)")
-    if not yes:
-        typer.echo("Re-run with --yes to confirm this import.", err=True)
-        raise typer.Exit(code=2)
-    del name, ref
-    _github_unavailable(json_output)
+    settings = _settings()
+    from chinescan.core.github_import import GitHubImportError, session_binding
+
+    if not settings.github_import_enabled:
+        _github_error(
+            GitHubImportError("feature_disabled", "Public GitHub import is disabled."),
+            json_output,
+        )
+    repository, service = _github_service(settings)
+    try:
+        preview = service.preview(session_binding("local-cli"), url, ref)
+        _github_emit(preview, json_output)
+        if not yes:
+            typer.echo("Import not started. Re-run with --yes to confirm.", err=True)
+            raise typer.Exit(code=2)
+        service.start_worker()
+        job = service.start(session_binding("local-cli"), str(preview["preview_id"]), name)
+        import time
+
+        while True:
+            current = service.get(session_binding("local-cli"), str(job["job_id"]))
+            if current["status"] in {"succeeded", "failed", "cancelled", "incomplete"}:
+                _github_emit(current, json_output)
+                if current["status"] != "succeeded":
+                    raise typer.Exit(code=2)
+                return
+            time.sleep(0.1)
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        _github_error(exc, json_output)
+    finally:
+        service.stop_worker()
+        repository.close()
 
 
 def github_status(
@@ -625,8 +676,21 @@ def github_status(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Show a GitHub import job status."""
-    del job_id
-    _github_unavailable(json_output)
+    settings = _settings()
+    from chinescan.core.github_import import GitHubImportError, session_binding
+
+    if not settings.github_import_enabled:
+        _github_error(
+            GitHubImportError("feature_disabled", "Public GitHub import is disabled."),
+            json_output,
+        )
+    repository, service = _github_service(settings)
+    try:
+        _github_emit(service.get(session_binding("local-cli"), job_id), json_output)
+    except Exception as exc:
+        _github_error(exc, json_output)
+    finally:
+        repository.close()
 
 
 def github_cancel(
@@ -634,8 +698,21 @@ def github_cancel(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Cancel a GitHub import job."""
-    del job_id
-    _github_unavailable(json_output)
+    settings = _settings()
+    from chinescan.core.github_import import GitHubImportError, session_binding
+
+    if not settings.github_import_enabled:
+        _github_error(
+            GitHubImportError("feature_disabled", "Public GitHub import is disabled."),
+            json_output,
+        )
+    repository, service = _github_service(settings)
+    try:
+        _github_emit(service.cancel(session_binding("local-cli"), job_id), json_output)
+    except Exception as exc:
+        _github_error(exc, json_output)
+    finally:
+        repository.close()
 
 
 config_app = typer.Typer(help="Initialize and validate local configuration.")
