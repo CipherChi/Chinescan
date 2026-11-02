@@ -27,6 +27,7 @@ from chinescan.core.fs_policy import (
     storage_paths,
     validate_allowed_roots,
 )
+from chinescan.core.github_import import import_path_at_risk
 
 State = Literal["PASS", "WARN", "FAIL"]
 _SAFE_RECORD_STATES = frozenset(
@@ -407,6 +408,35 @@ def build_report(
         "soft": len(policy_paths(loaded)[1]),
         "extra": len(loaded.extra_denied_paths),
     }
+    git_available = shutil.which("git") is not None
+    github_import_root = db_path.expanduser().resolve(strict=False).parent / "gh"
+    github_path_at_risk = import_path_at_risk(github_import_root)
+    github_import_warn = loaded.github_import_enabled and (not git_available or github_path_at_risk)
+    checks.append(
+        _check(
+            "github-import",
+            "GitHub import",
+            "WARN" if github_import_warn else "PASS",
+            "Import is enabled and Git is available."
+            if loaded.github_import_enabled and git_available and not github_path_at_risk
+            else "Import is enabled but Git is unavailable."
+            if loaded.github_import_enabled and not git_available
+            else (
+                "Import is enabled, but the managed import path is at risk of exceeding the "
+                "Windows path limit."
+            )
+            if loaded.github_import_enabled and github_path_at_risk
+            else "Import is disabled; Git availability is informational only.",
+            "Install Git to use public repository imports."
+            if loaded.github_import_enabled and not git_available
+            else (
+                "Use a shorter data directory so managed repository paths stay below the "
+                "Windows path limit."
+            )
+            if loaded.github_import_enabled and github_path_at_risk
+            else "",
+        )
+    )
     report: dict[str, Any] = {
         "status": "ok",
         "app_name": "ChineScan",
@@ -425,6 +455,8 @@ def build_report(
         "deny_list_tiers": deny_counts,
         "storage_size_bucket": size_bucket,
         "github_import_enabled": loaded.github_import_enabled,
+        "github_import_git_available": git_available,
+        "github_import_path_budget": "at-risk" if github_path_at_risk else "ok",
         "scan_bounds": {
             "max_files": loaded.max_files,
             "max_total_bytes": loaded.max_total_bytes,

@@ -353,6 +353,29 @@ def test_ready_healthy_returns_all_pass_and_diagnostics_matches_cli(
     assert api_checks == cli_checks
 
 
+def test_doctor_warns_when_enabled_github_import_path_budget_is_at_risk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        database_path=tmp_path / "records.sqlite3",
+        github_import_enabled=True,
+    )
+    monkeypatch.setattr(diagnostics, "import_path_at_risk", lambda _root: True)
+    report = build_report(
+        settings=settings,
+        database_path=settings.database_path,
+        config_path=tmp_path / "config.toml",
+        credential_path=tmp_path / "operator.json",
+        frontend_dist=tmp_path / "frontend-dist",
+    )
+    github_check = next(item for item in report["checks"] if item["id"] == "github-import")
+    assert github_check["state"] == "WARN"
+    assert report["github_import_path_budget"] == "at-risk"
+    assert "shorter data directory" in github_check["action_hint"]
+    assert str(tmp_path) not in json.dumps(report)
+
+
 def test_ready_degraded_for_invalid_allowed_root_and_missing_optional_storage(
     tmp_path: Path, monkeypatch
 ) -> None:

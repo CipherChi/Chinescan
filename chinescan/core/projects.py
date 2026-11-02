@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import os
+import shutil
 import stat
 import tomllib
 import unicodedata
@@ -182,6 +183,7 @@ class ProjectService:
         hard_denied: list[Path],
         soft_denied: list[Path],
         allow_soft_denied: bool,
+        managed_import_directory: Path | None = None,
     ) -> None:
         self.repository = repository
         self.browser = browser
@@ -190,8 +192,16 @@ class ProjectService:
         self.hard_denied = list(hard_denied)
         self.soft_denied = list(soft_denied)
         self.allow_soft_denied = allow_soft_denied
+        self.managed_import_directory = (
+            managed_import_directory.expanduser().absolute()
+            if managed_import_directory is not None
+            else None
+        )
 
     def decision(self, path: str | Path) -> PathDecision:
+        github_item = self._github_item_for_path(path)
+        if github_item is not None:
+            return self._github_decision(path, github_item)
         return decide_path(
             path,
             allowed_roots=self.allowed_roots,
@@ -199,6 +209,137 @@ class ProjectService:
             soft_denied=self.soft_denied,
             allow_soft_denied=self.allow_soft_denied,
         )
+
+    def github_project_count(self) -> int:
+        return sum(item.get("kind") == "github" for item in self.repository.list_records("project"))
+
+    def _github_item_for_path(self, path: str | Path) -> dict[str, Any] | None:
+        try:
+            candidate = Path(path).resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        for item in self.repository.list_records("project"):
+            if item.get("kind") != "github":
+                continue
+            try:
+                root = Path(str(item["root"])).resolve(strict=False)
+                candidate.relative_to(root)
+                return item
+            except (KeyError, OSError, RuntimeError, ValueError):
+                continue
+        return None
+
+    def _github_decision(self, path: str | Path, item: dict[str, Any]) -> PathDecision:
+        try:
+            target = Path(path).expanduser().resolve(strict=True)
+            managed = _canonical_directory(self.managed_import_directory or Path())
+            root = Path(str(item["root"])).resolve(strict=True)
+            target.relative_to(root)
+            root.relative_to(managed)
+            if _has_link_component(target) or not safe_project_tree(root):
+                raise ValueError
+            return PathDecision(True, "managed-github", "allowed", target)
+        except (OSError, RuntimeError, ValueError, ProjectError, KeyError):
+            return PathDecision(False, "denied", "managed_import_invalid")
+
+    def _verified_github_candidate(self, root: Path, job_id: str) -> Path:
+        if not job_id or self.managed_import_directory is None:
+            raise ProjectError("clone_delete_refused", "The verified import is unavailable.")
+        try:
+            managed = _canonical_directory(self.managed_import_directory)
+            candidate = _canonical_directory(root)
+            candidate.relative_to(managed)
+            if (
+                candidate.parent != managed
+                or not candidate.is_dir()
+                or not safe_project_tree(candidate)
+            ):
+                raise ValueError
+            return candidate
+        except (OSError, RuntimeError, ValueError, ProjectError) as exc:
+            raise ProjectError(
+                "clone_delete_refused", "The managed import is unavailable."
+            ) from exc
+
+    def _delete_verified_github_clone(self, root: Path) -> None:
+        verified = self._verified_github_candidate(root, "managed")
+        shutil.rmtree(verified)
+
+    def register_github_import(
+        self,
+        *,
+        name: str,
+        root: Path,
+        origin_url: str,
+        commit_sha: str,
+        fetched_at: str,
+        import_job_id: str,
+        max_projects: int,
+        replace_project_id: str | None = None,
+        replace_confirmation: str | None = None,
+    ) -> str:
+        normalized = unicodedata.normalize("NFKC", name).strip()
+        if not 1 <= len(normalized) <= 120 or any(ord(char) < 32 for char in normalized):
+            raise ProjectError("invalid_name", "Project name must be 1 to 120 characters.")
+        verified_root = self._verified_github_candidate(root, import_job_id)
+        existing = self._stored(replace_project_id) if replace_project_id else None
+        if replace_project_id:
+            if (
+                existing is None
+                or existing.get("kind") != "github"
+                or existing.get("origin_url") != origin_url
+            ):
+                raise ProjectError(
+                    "replace_unavailable", "Choose the matching GitHub project to replace."
+                )
+            if replace_confirmation != existing.get("name"):
+                raise ProjectError(
+                    "confirmation_mismatch", "Type the project name exactly to confirm replacement."
+                )
+            old_root = self._verified_github_candidate(
+                Path(str(existing["root"])), str(existing.get("import_job_id", ""))
+            )
+            updated = {
+                **existing,
+                "root": str(verified_root),
+                "origin_url": origin_url,
+                "commit_sha": commit_sha,
+                "fetched_at": fetched_at,
+                "import_job_id": import_job_id,
+            }
+            self.repository.save("project", str(existing["project_id"]), updated)
+            try:
+                self._delete_verified_github_clone(old_root)
+            except (OSError, ValueError) as exc:
+                self.repository.save("project", str(existing["project_id"]), existing)
+                raise ProjectError(
+                    "clone_delete_refused",
+                    "The previous managed import could not be removed safely.",
+                ) from exc
+            return str(existing["project_id"])
+        if self.github_project_count() >= max_projects:
+            raise ProjectError("project_limit", "The configured GitHub project limit was reached.")
+        if any(
+            _name_key(str(item.get("name", ""))) == _name_key(normalized)
+            for item in self._all_internal_and_file()
+        ):
+            raise ProjectError("duplicate_name", "A project with that name already exists.")
+        project_id = str(uuid.uuid4())
+        item = {
+            "project_id": project_id,
+            "name": normalized,
+            "kind": "github",
+            "root": str(verified_root),
+            "origin_url": origin_url,
+            "commit_sha": commit_sha,
+            "fetched_at": fetched_at,
+            "import_job_id": import_job_id,
+            "configured_by": "ui",
+            "created_at": _now(),
+            "last_scan_refs": [],
+        }
+        self.repository.save("project", project_id, item)
+        return project_id
 
     def create_from_selection(self, name: str, session: str, directory_id: str) -> dict[str, Any]:
         root = self.browser.resolve_selection(session, "project_directory", directory_id)
@@ -381,6 +522,16 @@ class ProjectService:
             raise ProjectError(
                 "confirmation_mismatch", "Type the project name exactly to confirm removal."
             )
+        if item.get("kind") == "github":
+            root = self._verified_github_candidate(
+                Path(str(item.get("root", ""))), str(item.get("import_job_id", ""))
+            )
+            try:
+                self._delete_verified_github_clone(root)
+            except OSError as exc:
+                raise ProjectError(
+                    "clone_delete_refused", "The managed import could not be removed safely."
+                ) from exc
         scans = [
             row
             for row in self.repository.list_records("scan")
@@ -406,13 +557,16 @@ class ProjectService:
             configured_by = "file"
         else:
             name, root = str(item["name"]), Path(str(item["root"]))
-        decision = decide_path(
-            root,
-            allowed_roots=self.allowed_roots if configured_by == "ui" else [root],
-            hard_denied=self.hard_denied,
-            soft_denied=self.soft_denied,
-            allow_soft_denied=self.allow_soft_denied,
-        )
+        if item is not None and item.get("kind") == "github":
+            decision = self._github_decision(root, item)
+        else:
+            decision = decide_path(
+                root,
+                allowed_roots=self.allowed_roots if configured_by == "ui" else [root],
+                hard_denied=self.hard_denied,
+                soft_denied=self.soft_denied,
+                allow_soft_denied=self.allow_soft_denied,
+            )
         if not decision.allowed or decision.path is None or not decision.path.is_dir():
             raise ProjectError(
                 "root_denied",
@@ -458,18 +612,27 @@ class ProjectService:
 
     @staticmethod
     def _summary(item: dict[str, Any]) -> dict[str, Any]:
-        return {
+        summary: dict[str, Any] = {
             "project_id": str(item["project_id"]),
             "name": str(item["name"]),
             "kind": str(item.get("kind", "local")),
             "configured_by": str(item.get("configured_by", "file")),
-            "origin_label": "This device",
+            "origin_label": "This device" if item.get("kind") == "local" else "GitHub",
             "created_at": str(item.get("created_at", "")),
             "last_scan_refs": list(item.get("last_scan_refs", [])),
             "last_scan": item.get("last_scan_refs", [None])[0]
             if item.get("last_scan_refs")
             else None,
         }
+        if item.get("kind") == "github":
+            summary.update(
+                {
+                    "origin_url": str(item.get("origin_url", "")),
+                    "commit_sha": str(item.get("commit_sha", "")),
+                    "fetched_at": str(item.get("fetched_at", "")),
+                }
+            )
+        return summary
 
     @staticmethod
     def _public(item: dict[str, Any]) -> dict[str, Any]:

@@ -46,3 +46,9 @@ Doctor check IDs: `config`, `credentials`, `filesystem-policy`, `directories`, `
 
 The offline browser test blocks the three API requests from the page, presses **Check now**, verifies the offline state, then removes the routes and checks recovery. The separate unit test exercises retry timing and its cap.
 
+
+### Doctor frontend dependency verification — 2026-11-01
+
+PR #12 was still open during this work, so changes were made on its existing `hardening/diagnostics` branch. A fresh OS-temporary repository copy was installed with `npm ci --no-audit` in `frontend/` using npm 12.1.0; npm reported 106 packages added. The install contained both `node_modules/.package-lock.json` and `node_modules/.bin`. Its marker omitted 44 platform-specific optional package entries present in the root lockfile, which caused the former marker comparison to return `False`. The new check compared installed package manifests against the root lockfile and reported `Frontend dependencies: PASS` for that install.
+
+The final local backend and quality gates on Windows with Python 3.12.10 were: pytest: 340 passed, 5 optional scanner tests deselected; 81.65% coverage. Ruff check and format, strict mypy across 64 source files, Bandit medium+ (12 low findings), and compileall passed. The suite exposed a race in project malware scan completion: terminal job status could be observed before its `malware_scan_finished` audit event was committed. The job and finish event are now written atomically; the existing assertion was retained, and the full suite passed after that ordering fix.

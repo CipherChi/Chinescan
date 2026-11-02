@@ -7,6 +7,7 @@ import asyncio
 import json
 import signal
 import socket
+import subprocess
 import sys
 import threading
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ import uvicorn
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from chinescan.core.config.settings import Settings
+from chinescan.core.github_import import guarded_test_file_repository_url
 from chinescan.core.models.common import Severity
 from chinescan.core.models.finding import Finding
 from chinescan.core.models.investigation import Event, Scan
@@ -92,6 +94,7 @@ def main() -> None:
     parser.add_argument("--empty-account", action="store_true")
     parser.add_argument("--projects-enabled", action="store_true")
     parser.add_argument("--missing-managed-storage", action="store_true")
+    parser.add_argument("--github-import-enabled", action="store_true")
     args = parser.parse_args()
     operator_email, operator_password = (
         (None, None) if args.empty_account else _read_test_credentials()
@@ -109,6 +112,35 @@ def main() -> None:
         encoding="utf-8",
     )
     (project / "large.bin").write_bytes(b"x" * 128)
+    if args.github_import_enabled:
+        source = args.data_dir / "github-source"
+        source.mkdir()
+        subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+        (source / "sample.py").write_text("value = 1\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(source), "add", "sample.py"], check=True, capture_output=True
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(source),
+                "-c",
+                "user.name=Browser Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-m",
+                "runtime fixture",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "clone", "--bare", str(source), str(args.data_dir / "public-repository.git")],
+            check=True,
+            capture_output=True,
+        )
     if args.projects_enabled:
         project_logs = project / "logs"
         project_logs.mkdir()
@@ -248,7 +280,9 @@ def main() -> None:
             allowed_roots=[project] if args.projects_enabled else [],
             max_files=1,
             malware_max_file_bytes=100,
+            github_import_enabled=args.github_import_enabled,
         ),
+        github_import_test_file_transport=args.github_import_enabled,
     )
     served_application: ASGIApp = application
     if args.hold_scan_until_expiry:
@@ -281,10 +315,12 @@ def main() -> None:
         threading.Event().wait(0.01)
     if not server.started:
         raise RuntimeError("Loopback application failed to start")
-    print(
-        json.dumps({"url": f"http://127.0.0.1:{listener.getsockname()[1]}"}),
-        flush=True,
-    )
+    announcement = {"url": f"http://127.0.0.1:{listener.getsockname()[1]}"}
+    if args.github_import_enabled:
+        announcement["github_repository_url"] = guarded_test_file_repository_url(
+            args.data_dir / "public-repository.git"
+        )
+    print(json.dumps(announcement), flush=True)
     worker.join()
 
 

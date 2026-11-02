@@ -138,6 +138,29 @@ uv run chinescan --reports-dir "$HOME/chinescan-reports" code .
 
 The default SQLite database and report locations are local user-data paths. Config initialization never writes secret values; logs redact secret-like values.
 
+## Public GitHub imports
+
+Public GitHub imports are opt-in and disabled by default. To enable them, add the following to
+your local `config.toml` and restart ChineScan:
+
+```toml
+github_import_enabled = true
+github_import_timeout_seconds = 120
+github_import_max_bytes = 524288000
+github_import_max_files = 50000
+github_import_max_projects = 20
+```
+
+Imports are shallow, do not fetch submodules or Git LFS content, do not run hooks or repository
+content, reject links and unsafe filenames, and refuse redirects. Git metadata has a separate
+bounded allowance. Import and scan public repositories inside a VM. Files quarantined or removed
+by Defender can produce an incomplete import; review system security history without disabling
+Defender. Git must be installed. “Not found or private” means only public repositories are
+supported; private-repository credentials are not used. Imports can fail at the configured size,
+file-count, time, or project cap. If the UI reports `path_too_long`, shorten the configured data
+directory; the managed clone uses a short `gh` subfolder, and doctor reports an at-risk Windows
+path budget without printing the path.
+
 ## Security and responsible use
 
 Use ChineScan only on assets and data you own or are explicitly authorized to assess. Code and indicator scans operate on local files; code scanning does not execute project code. The indicator scanner is offline. Domain posture checks perform network activity and require explicit target authorization. Optional package audit integrations can send dependency metadata to advisory services only when explicitly enabled with `--allow-network-audits`.
