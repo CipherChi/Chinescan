@@ -17,7 +17,7 @@ export default defineConfig({
     video: 'off',
   },
   projects: [
-    { name: 'chromium-production', testMatch: ['dashboard.spec.ts', 'projects.spec.ts', 'system-status.spec.ts'] },
+    { name: 'chromium-production', testMatch: ['dashboard.spec.ts', 'projects.spec.ts', 'github-import.spec.ts', 'system-status.spec.ts'] },
     {
       name: 'chromium-operator-recovery',
       testMatch: 'operator-recovery.spec.ts',
