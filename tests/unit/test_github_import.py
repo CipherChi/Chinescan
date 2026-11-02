@@ -145,7 +145,7 @@ def _run_fixture_import(
     service, repository = _service(tmp_path, monkeypatch, max_bytes=max_bytes, max_files=max_files)
     try:
         service.start_worker()
-        preview = service.preview("session", bare.as_uri(), None)
+        preview = service.preview("session", guarded_test_file_repository_url(bare), None)
         job = service.start("session", str(preview["preview_id"]), "Fixture")
         result = _wait_for_job(service, str(job["job_id"]))
         return result, service.managed_directory / str(job["job_id"])
@@ -176,10 +176,13 @@ def _service(
         github_import_max_bytes=max_bytes,
         github_import_max_files=max_files,
     )
+    managed_temp = tempfile.TemporaryDirectory(prefix="gh-")
+    atexit.register(managed_temp.cleanup)
+    managed_directory = Path(managed_temp.name) / "gh"
     service = GitHubImportService(
         repository,
         settings,
-        tmp_path / "managed-imports",
+        managed_directory,
         test_file_transport=True,
         process_factory=process_factory,
     )
@@ -357,7 +360,7 @@ def test_preview_is_network_free_session_bound_expiring_and_single_use(
         raise AssertionError("preview must not start a subprocess")
 
     service, repository = _service(tmp_path, monkeypatch, process_factory=forbidden_process)
-    preview = service.preview("session-a", bare.as_uri(), "main")
+    preview = service.preview("session-a", guarded_test_file_repository_url(bare), "main")
     assert preview["fetch_depth"] == 1
     assert preview["submodules"] is False and preview["lfs"] is False
     assert preview["url"] == "https://github.com/test-fixture/repository"
@@ -370,7 +373,7 @@ def test_preview_is_network_free_session_bound_expiring_and_single_use(
         service.start("session-a", str(preview["preview_id"]), "Fixture")
     stored_preview = service._previews[str(preview["preview_id"])]
     stored_preview.expires_at = time.monotonic() - 1
-    expired = service.preview("session-a", bare.as_uri(), None)
+    expired = service.preview("session-a", guarded_test_file_repository_url(bare), None)
     service._previews[str(expired["preview_id"])].expires_at = time.monotonic() - 1
     with pytest.raises(GitHubImportError, match="expired"):
         service.start("session-a", str(expired["preview_id"]), "Fixture")
@@ -393,7 +396,7 @@ def test_local_bare_repository_import_verifies_sha_and_removes_git(tmp_path, mon
     )
     try:
         service.start_worker()
-        preview = service.preview("session", bare.as_uri(), None)
+        preview = service.preview("session", guarded_test_file_repository_url(bare), None)
         job = service.start("session", str(preview["preview_id"]), "Fixture")
         result = _wait_for_job(service, str(job["job_id"]))
         assert result["status"] == "succeeded", result
@@ -428,7 +431,9 @@ def test_api_preview_then_import_job_is_session_bound_and_path_free(tmp_path, mo
     manager.process_factory = forbidden_process
     try:
         preview_response = client.post(
-            "/api/github/previews", json={"url": bare.as_uri()}, headers=headers
+            "/api/github/previews",
+            json={"url": guarded_test_file_repository_url(bare)},
+            headers=headers,
         )
         assert preview_response.status_code == 200, preview_response.text
         preview = preview_response.json()
@@ -479,10 +484,190 @@ def test_api_preview_then_import_job_is_session_bound_and_path_free(tmp_path, mo
             time.sleep(0.1)
         assert terminal is not None
         assert terminal["status"] == "succeeded", terminal
+        assert terminal["project_id"]
+        projects = client.get("/api/projects")
+        assert projects.status_code == 200
+        imported_project = next(
+            item for item in projects.json() if item["project_id"] == terminal["project_id"]
+        )
+        assert imported_project["kind"] == "github"
+        assert imported_project["origin_url"] == preview["url"]
+        assert imported_project["commit_sha"] == terminal["commit_sha"]
+        assert str(tmp_path) not in projects.text
+        project_id = str(terminal["project_id"])
+        assessed = client.post(f"/api/projects/{project_id}/code-jobs", headers=headers)
+        assert assessed.status_code == 202, assessed.text
+        acknowledgement = client.post(
+            "/api/malware/acknowledgements",
+            json={"project_id": project_id, "confirmed": True},
+            headers=headers,
+        )
+        assert acknowledgement.status_code == 201, acknowledgement.text
+        malware_job = client.post(
+            f"/api/projects/{project_id}/malware-jobs",
+            json={
+                "acknowledgement_token": acknowledgement.json()["token"],
+                "profile": "builtin_static",
+            },
+            headers=headers,
+        )
+        assert malware_job.status_code == 202, malware_job.text
+        assert str(tmp_path) not in assessed.text + acknowledgement.text + malware_job.text
+        import_record = next(
+            item
+            for item in application.state.repository.list_records("github_import_job")
+            if item.get("project_id") == project_id
+        )
+        clone_path = manager.managed_directory / str(import_record["job_id"])
+        assert clone_path.is_dir()
+        repository = application.state.repository
+        repository.save(
+            "scan",
+            "scan-fixture-github",
+            {
+                "scan_id": "scan-fixture-github",
+                "project_id": project_id,
+                "finding_ids": ["finding-fixture-github"],
+            },
+        )
+        repository.save(
+            "finding",
+            "finding-fixture-github",
+            {"finding_id": "finding-fixture-github", "project_id": project_id},
+        )
+        repository.save(
+            "code_job",
+            "code-job-fixture-github",
+            {"job_id": "code-job-fixture-github", "project_id": project_id},
+        )
+        repository.save(
+            "case",
+            "case-fixture-github",
+            {"case_id": "case-fixture-github", "scan_ids": ["scan-fixture-github"]},
+        )
+        removed = client.request(
+            "DELETE",
+            f"/api/projects/{project_id}",
+            json={"confirmation": imported_project["name"]},
+            headers=headers,
+        )
+        assert removed.status_code == 200, removed.text
+        assert not clone_path.exists()
+        for record_type, key_name, record_id in (
+            ("scan", "scan_id", "scan-fixture-github"),
+            ("finding", "finding_id", "finding-fixture-github"),
+            ("code_job", "job_id", "code-job-fixture-github"),
+            ("case", "case_id", "case-fixture-github"),
+        ):
+            saved_record = next(
+                item
+                for item in repository.list_records(record_type)
+                if item.get(key_name) == record_id
+            )
+            assert saved_record["project_removed"] is True
         assert str(tmp_path) not in current.text
     finally:
         manager.stop_worker()
         client.close()
+
+
+def test_file_transport_seam_is_refused_outside_guarded_test_mode(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHINESCAN_TEST_GITHUB_IMPORT", "1")
+    monkeypatch.delenv("CHINESCAN_BROWSER_TEST_MODE", raising=False)
+    monkeypatch.delitem(__import__("sys").modules, "pytest", raising=False)
+    settings = Settings(_env_file=None, database_path=tmp_path / "records.sqlite3")
+    repository = SQLiteRepository(settings.database_path)
+    try:
+        with pytest.raises(GitHubImportError, match="guarded tests"):
+            GitHubImportService(
+                repository,
+                settings,
+                tmp_path / "managed-imports",
+                test_file_transport=True,
+            )
+    finally:
+        repository.close()
+
+
+def test_guarded_file_url_round_trips_percent_paths_without_double_encoding(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CHINESCAN_TEST_GITHUB_IMPORT", "1")
+    bare = tmp_path / "fixture%7Erepository.git"
+    bare.mkdir()
+    source_url = guarded_test_file_repository_url(bare)
+    assert "%257E" in source_url
+    assert github_import_core._validate_test_source(source_url, True) == source_url
+    with pytest.raises(GitHubImportError, match="plain ASCII|https://github.com"):
+        validate_github_url(source_url)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected_code"),
+    [
+        ("fatal: repository not found", "repo_not_found_or_private"),
+        ("remote: Repository not found.", "repo_not_found_or_private"),
+        ("fatal: '/tmp/missing' does not appear to be a git repository", "import_unavailable"),
+        ("fatal: Could not read from remote repository.", "import_unavailable"),
+        ("fatal: transport 'file' not allowed", "import_unavailable"),
+        ("fatal: unable to access remote: Could not resolve host", "network_unreachable"),
+    ],
+)
+def test_git_error_mapping_distinguishes_missing_repositories_from_local_access_errors(
+    stderr: str, expected_code: str
+) -> None:
+    assert github_import_core._map_git_error(stderr)[0] == expected_code
+
+
+def test_git_checkout_path_limit_has_its_own_error_code() -> None:
+    code, message = github_import_core._map_git_error(
+        "fatal: cannot create directory at 'managed/repo/file.txt': Filename too long"
+    )
+    assert code == "path_too_long"
+    assert message == (
+        "The import location path is too long; use a shorter managed import directory."
+    )
+    assert github_import_core._map_git_error("fatal: invalid path 'CON'")[0] == "unsafe_entries"
+
+
+def test_import_preflight_rejects_a_windows_checkout_path_before_starting_git(
+    tmp_path, monkeypatch
+) -> None:
+    bare = _bare_repo(tmp_path / "fixture")
+    service, repository = _service(tmp_path / "service", monkeypatch)
+    calls: list[object] = []
+
+    def forbidden_process(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("path preflight must stop before Git starts")
+
+    service.process_factory = forbidden_process
+    service.managed_directory = tmp_path / ("a" * 80) / ("b" * 80)
+    monkeypatch.setattr(github_import_core, "import_path_at_risk", lambda _path: True)
+    try:
+        assert import_path_at_risk(service.managed_directory, windows=True)
+        job = github_import_core._Job(
+            job_id="c" * 36,
+            owner_session="session",
+            name="Fixture",
+            canonical_url="https://github.com/test-fixture/repository",
+            fetch_url=guarded_test_file_repository_url(bare),
+            ref=None,
+        )
+        job.clone_path = service._target_for(job.job_id)
+        with pytest.raises(GitHubImportError) as error:
+            service._fetch(job)
+        assert error.value.code == "path_too_long"
+        assert calls == []
+    finally:
+        repository.close()
+
+
+def test_import_path_budget_handles_short_and_at_risk_roots(tmp_path) -> None:
+    assert not import_path_at_risk(Path("C:/d/gh"), windows=True)
+    long_root = Path("C:/") / ("x" * 120)
+    assert import_path_at_risk(long_root, windows=True)
+    assert not import_path_at_risk(long_root, windows=False)
 
 
 def test_github_api_origin_csrf_auth_and_rate_limit(tmp_path, monkeypatch) -> None:
@@ -597,7 +782,7 @@ def test_pinned_sha_uses_shallow_fetch_and_records_exact_commit(tmp_path, monkey
     service.process_factory = record_process
     try:
         service.start_worker()
-        preview = service.preview("session", bare.as_uri(), sha)
+        preview = service.preview("session", guarded_test_file_repository_url(bare), sha)
         job = service.start("session", str(preview["preview_id"]), "Pinned")
         result = _wait_for_job(service, str(job["job_id"]))
         assert result["status"] == "succeeded", result
@@ -680,7 +865,7 @@ def test_overlong_repository_path_is_rejected(tmp_path, monkeypatch) -> None:
     _publish_long_path(bare, parts, "long path")
     result, imported = _run_fixture_import(tmp_path / "import", monkeypatch, bare)
     assert result["status"] == "failed", result
-    assert result["error_code"] == "unsafe_entries"
+    assert result["error_code"] == "path_too_long"
     assert not imported.exists()
 
 
@@ -720,7 +905,7 @@ def test_timeout_cancel_and_quota_terminate_the_started_process(
     )
     try:
         service.start_worker()
-        preview = service.preview("session", bare.as_uri(), None)
+        preview = service.preview("session", guarded_test_file_repository_url(bare), None)
         job = service.start("session", str(preview["preview_id"]), "Fixture")
         assert started.wait(5)
         if terminal_action == "cancel":
@@ -747,10 +932,10 @@ def test_import_queue_is_bounded_without_starting_more_than_one_worker(
     try:
         queued = []
         for index in range(service.QUEUE_CAPACITY):
-            preview = service.preview("session", bare.as_uri(), None)
+            preview = service.preview("session", guarded_test_file_repository_url(bare), None)
             queued.append(service.start("session", str(preview["preview_id"]), f"Fixture {index}"))
         assert all(job["status"] == "queued" for job in queued)
-        preview = service.preview("session", bare.as_uri(), None)
+        preview = service.preview("session", guarded_test_file_repository_url(bare), None)
         with pytest.raises(GitHubImportError, match="queue is full"):
             service.start("session", str(preview["preview_id"]), "Overflow")
         assert service._worker is None
@@ -766,7 +951,7 @@ def test_poisoned_clone_path_cleanup_refuses_outside_directory(tmp_path, monkeyp
     canary = outside / "keep.txt"
     canary.write_text("untouched", encoding="utf-8")
     try:
-        preview = service.preview("session", bare.as_uri(), None)
+        preview = service.preview("session", guarded_test_file_repository_url(bare), None)
         job = service.start("session", str(preview["preview_id"]), "Fixture")
         private_job = service._jobs[str(job["job_id"])]
         private_job.clone_path = outside
@@ -806,7 +991,7 @@ def test_git_stderr_canary_and_internal_path_never_escape_error_or_logs(
     )
     try:
         service.start_worker()
-        preview = service.preview("session", bare.as_uri(), None)
+        preview = service.preview("session", guarded_test_file_repository_url(bare), None)
         job = service.start("session", str(preview["preview_id"]), "Fixture")
         result = _wait_for_job(service, str(job["job_id"]))
         assert result["status"] == "failed"
@@ -839,7 +1024,9 @@ def test_reparse_entry_and_outside_root_resolution_are_rejected(tmp_path, monkey
             github_import_core,
             "_is_link_or_reparse",
             lambda path, metadata: (
-                False if path == junction else original_link_check(path, metadata)
+                False
+                if path.name == junction.name and path.parent == root.resolve()
+                else original_link_check(path, metadata)
             ),
         )
         with pytest.raises(GitHubImportError, match="outside the import"):
@@ -879,7 +1066,7 @@ def test_ads_is_detected_and_incomplete_when_a_tracked_file_vanishes(tmp_path, m
     monkeypatch.setattr(service, "_verify_tree", file_vanishes_after_walk)
     try:
         service.start_worker()
-        preview = service.preview("session", bare.as_uri(), None)
+        preview = service.preview("session", guarded_test_file_repository_url(bare), None)
         job = service.start("session", str(preview["preview_id"]), "Vanish")
         result = _wait_for_job(service, str(job["job_id"]))
         assert result["status"] == "incomplete"

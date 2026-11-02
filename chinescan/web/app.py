@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import shutil
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -230,6 +231,8 @@ class GitHubImportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     preview_id: str = Field(min_length=1, max_length=80)
     name: str = Field(min_length=1, max_length=120)
+    replace_project_id: str | None = Field(default=None, max_length=80)
+    replace_confirmation: str | None = Field(default=None, max_length=120)
 
 
 class CodeJobCreateRequest(BaseModel):
@@ -518,6 +521,7 @@ def create_app(
         soft_denied,
         active_settings.allow_soft_denied,
     )
+    github_managed_directory = Path(database_path).expanduser().resolve(strict=False).parent / "gh"
     project_service = ProjectService(
         repository,
         fs_browser,
@@ -526,6 +530,7 @@ def create_app(
         hard_denied=hard_denied,
         soft_denied=soft_denied,
         allow_soft_denied=active_settings.allow_soft_denied,
+        managed_import_directory=github_managed_directory,
     )
     log_location_service = LogLocationService(repository, project_service)
     log_jobs = LogJobManager(
@@ -538,8 +543,9 @@ def create_app(
     github_imports = GitHubImportService(
         repository,
         active_settings,
-        Path(database_path).expanduser().resolve(strict=False).parent / "github-imports",
+        github_managed_directory,
         test_file_transport=github_import_test_file_transport,
+        project_service=project_service,
     )
     jobs = CodeJobManager(
         repository,
@@ -882,6 +888,19 @@ def create_app(
                 detail={"code": "rate_limited", "message": "GitHub import rate limit reached."},
             )
 
+    @application.get("/api/github/status")
+    def github_import_status_info(
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:
+        return {
+            "enabled": active_settings.github_import_enabled,
+            "git_available": shutil.which("git") is not None,
+            "max_bytes": active_settings.github_import_max_bytes,
+            "max_files": active_settings.github_import_max_files,
+            "max_projects": active_settings.github_import_max_projects,
+            "timeout_seconds": active_settings.github_import_timeout_seconds,
+        }
+
     @application.post("/api/github/previews")
     def github_preview(
         payload: GitHubPreviewRequest,
@@ -907,7 +926,11 @@ def create_app(
         allow_github_import(request)
         try:
             return github_imports.start(
-                session_binding(session.csrf_token), payload.preview_id, payload.name
+                session_binding(session.csrf_token),
+                payload.preview_id,
+                payload.name,
+                replace_project_id=payload.replace_project_id,
+                replace_confirmation=payload.replace_confirmation,
             )
         except GitHubImportError as exc:
             raise github_import_error(exc) from exc

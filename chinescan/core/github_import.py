@@ -19,9 +19,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
+from urllib.request import url2pathname
 from uuid import uuid4
 
 from chinescan.core.config.settings import Settings
+from chinescan.core.projects import ProjectError, ProjectService
 from chinescan.core.storage.sqlite import SQLiteRepository
 
 JobStatus = Literal[
@@ -192,10 +194,33 @@ def build_git_environment(*, test_file_transport: bool = False) -> dict[str, str
 
 
 def _test_seam_allowed() -> bool:
-    return (
-        os.environ.get("CHINESCAN_TEST_GITHUB_IMPORT") == "1"
-        and "pytest" in __import__("sys").modules
+    return os.environ.get("CHINESCAN_TEST_GITHUB_IMPORT") == "1" and (
+        "pytest" in __import__("sys").modules
+        or os.environ.get("CHINESCAN_BROWSER_TEST_MODE") == "1"
     )
+
+
+def guarded_test_file_repository_url(repository: Path) -> str:
+    """Return a canonical file URL for a runtime test repository, only in guarded tests."""
+    if not _test_seam_allowed():
+        raise GitHubImportError(
+            "test_seam_refused", "Local transport is available only in guarded tests."
+        )
+    try:
+        resolved = repository.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise GitHubImportError("invalid_url", "The test repository is unavailable.") from exc
+    if not resolved.is_dir():
+        raise GitHubImportError("invalid_url", "The test repository is unavailable.")
+    return resolved.as_uri()
+
+
+def _map_git_error(stderr: str) -> tuple[str, str]:
+    diagnostic = stderr.lower()
+    for markers, code, message in _GIT_ERROR_MAP:
+        if any(marker in diagnostic for marker in markers):
+            return code, message
+    return "network_unreachable", "The public repository could not be fetched."
 
 
 def build_clone_argv(
@@ -263,12 +288,12 @@ def _validate_test_source(url: str, test_file_transport: bool) -> str:
             "test_seam_refused", "Local transport is available only in guarded tests."
         )
     parsed = urlsplit(url)
-    local_path = Path(parsed.path.lstrip("/")) if os.name == "nt" else Path(parsed.path)
+    local_path = Path(url2pathname(parsed.path))
     if parsed.scheme != "file" or parsed.netloc or not local_path.is_absolute():
         raise GitHubImportError(
             "invalid_url", "The test transport accepts only a local absolute file URL."
         )
-    return local_path.as_uri()
+    return guarded_test_file_repository_url(local_path)
 
 
 @dataclass(slots=True)
@@ -298,6 +323,9 @@ class _Job:
     fetched_at: str | None = None
     file_count: int | None = None
     total_bytes: int | None = None
+    project_id: str | None = None
+    replace_project_id: str | None = None
+    replace_confirmation: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     cancel_event: threading.Event = field(default_factory=threading.Event)
     process: subprocess.Popen[bytes] | None = None
@@ -317,6 +345,7 @@ class _Job:
                 "fetched_at",
                 "file_count",
                 "total_bytes",
+                "project_id",
                 "created_at",
             )
         }
@@ -339,6 +368,7 @@ class GitHubImportService:
         *,
         test_file_transport: bool = False,
         process_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+        project_service: ProjectService | None = None,
     ) -> None:
         if test_file_transport and not _test_seam_allowed():
             raise GitHubImportError(
@@ -349,6 +379,7 @@ class GitHubImportService:
         self.managed_directory = managed_directory.expanduser().absolute()
         self.test_file_transport = test_file_transport
         self.process_factory = process_factory
+        self.project_service = project_service
         self._previews: dict[str, _Preview] = {}
         self._jobs: dict[str, _Job] = {}
         self._lock = threading.RLock()
@@ -394,7 +425,15 @@ class GitHubImportService:
             "expires_in_seconds": self.PREVIEW_TTL_SECONDS,
         }
 
-    def start(self, session_id: str, preview_id: str, name: str) -> dict[str, Any]:
+    def start(
+        self,
+        session_id: str,
+        preview_id: str,
+        name: str,
+        *,
+        replace_project_id: str | None = None,
+        replace_confirmation: str | None = None,
+    ) -> dict[str, Any]:
         safe_name = name.strip()
         if not 1 <= len(safe_name) <= 120 or any(ord(c) < 32 for c in safe_name):
             raise GitHubImportError("invalid_name", "Project name must be 1 to 120 characters.")
@@ -409,12 +448,15 @@ class GitHubImportService:
                 )
             if preview.used:
                 raise GitHubImportError("preview_used", "This preview has already been used.")
-            saved_jobs = self.repository.list_records("github_import_job")
-            succeeded = sum(item.get("status") == "succeeded" for item in saved_jobs)
-            succeeded = max(
-                succeeded,
-                sum(job.status == "succeeded" for job in self._jobs.values()),
-            )
+            if self.project_service is not None:
+                succeeded = self.project_service.github_project_count()
+            else:
+                saved_jobs = self.repository.list_records("github_import_job")
+                succeeded = sum(item.get("status") == "succeeded" for item in saved_jobs)
+                succeeded = max(
+                    succeeded,
+                    sum(job.status == "succeeded" for job in self._jobs.values()),
+                )
             if succeeded >= self.settings.github_import_max_projects:
                 raise GitHubImportError(
                     "project_limit", "The configured public import limit has been reached."
@@ -434,6 +476,8 @@ class GitHubImportService:
                 preview.fetch_url,
                 preview.ref,
             )
+            job.replace_project_id = replace_project_id
+            job.replace_confirmation = replace_confirmation
             try:
                 self._queue.put_nowait(job)
             except queue.Full as exc:
@@ -578,6 +622,18 @@ class GitHubImportService:
                 job.status, job.phase = "verifying", "verifying"
                 self._save_job(job)
             self._verify(job)
+            if self.project_service is not None and job.clone_path is not None:
+                job.project_id = self.project_service.register_github_import(
+                    name=job.name,
+                    root=job.clone_path,
+                    origin_url=job.canonical_url,
+                    commit_sha=job.commit_sha or "",
+                    fetched_at=job.fetched_at or datetime.now(UTC).isoformat(),
+                    import_job_id=job.job_id,
+                    max_projects=self.settings.github_import_max_projects,
+                    replace_project_id=job.replace_project_id,
+                    replace_confirmation=job.replace_confirmation,
+                )
             self._finish(job, "succeeded", None, None)
         except GitHubImportError as exc:
             if exc.code == "quarantined_or_missing_files":
@@ -736,13 +792,9 @@ class GitHubImportService:
             raise failure
         if process.returncode != 0:
             with stderr_lock:
-                diagnostic = bytes(stderr_data).decode("utf-8", errors="replace").lower()
-            for markers, code, message in _GIT_ERROR_MAP:
-                if any(marker in diagnostic for marker in markers):
-                    raise GitHubImportError(code, message)
-            raise GitHubImportError(
-                "network_unreachable", "The public repository could not be fetched."
-            )
+                raw_diagnostic = bytes(stderr_data).decode("utf-8", errors="replace")
+            code, message = _map_git_error(raw_diagnostic)
+            raise GitHubImportError(code, message)
 
     def _verify(self, job: _Job) -> None:
         root = job.clone_path
@@ -1114,9 +1166,6 @@ class GitHubImportService:
             return
 
     def _finish(self, job: _Job, status: JobStatus, code: str | None, message: str | None) -> None:
-        with self._lock:
-            job.status, job.phase, job.error_code, job.message = status, status, code, message
-            self._save_job(job)
         event = (
             "finish"
             if status == "succeeded"
@@ -1124,7 +1173,10 @@ class GitHubImportService:
             if status in {"failed", "incomplete"}
             else "cancel"
         )
-        self._audit(event, job_id=job.job_id, status=status, error_code=code)
+        with self._lock:
+            job.status, job.phase, job.error_code, job.message = status, status, code, message
+            self._save_job(job)
+            self._audit(event, job_id=job.job_id, status=status, error_code=code)
 
     def _save_job(self, job: _Job) -> None:
         record = job.response()
@@ -1135,6 +1187,7 @@ class GitHubImportService:
                 "ref": job.ref,
                 "owner_session": job.owner_session,
                 "cancel_requested": job.cancel_event.is_set(),
+                "replace_project_id": job.replace_project_id,
             }
         )
         self.repository.save("github_import_job", job.job_id, record)

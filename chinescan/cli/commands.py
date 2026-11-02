@@ -568,12 +568,27 @@ def _settings() -> Settings:
 def _github_service(
     settings: Settings,
 ) -> tuple[SQLiteRepository, GitHubImportService]:
+    from chinescan.core.fs_policy import FilesystemBrowserService
+    from chinescan.core.projects import ProjectFileRegistry
 
     repository = SQLiteRepository(settings.database_path)
+    hard, soft = policy_paths(settings)
+    managed_directory = settings.database_path.expanduser().resolve(strict=False).parent / "gh"
+    projects = ProjectService(
+        repository,
+        FilesystemBrowserService(settings.allowed_roots, hard, soft, settings.allow_soft_denied),
+        ProjectFileRegistry(None, []),
+        allowed_roots=settings.allowed_roots,
+        hard_denied=hard,
+        soft_denied=soft,
+        allow_soft_denied=settings.allow_soft_denied,
+        managed_import_directory=managed_directory,
+    )
     service = GitHubImportService(
         repository,
         settings,
-        settings.database_path.expanduser().resolve(strict=False).parent / "github-imports",
+        managed_directory,
+        project_service=projects,
     )
     return repository, service
 
