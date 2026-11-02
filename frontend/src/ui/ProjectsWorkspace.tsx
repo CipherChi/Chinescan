@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, UnauthorizedError } from '../api';
 import type { FsDirectory, FsPage, LogJob, ProjectDetail, ProjectSummary } from '../types';
 import { ProjectMalware } from './ProjectMalware';
+import { GitHubImportDialog } from './GitHubImportDialog';
 
 type Props = { onUnauthorized: () => void; onOpenScan: (id: string) => void; onCreateCase: (id: string) => void };
 const pickerExample = "allowed_roots = ['C:\\src']";
@@ -13,6 +14,7 @@ export function ProjectsWorkspace({ onUnauthorized, onOpenScan, onCreateCase }: 
   const [error, setError] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [confirmation, setConfirmation] = useState('');
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -93,7 +95,7 @@ export function ProjectsWorkspace({ onUnauthorized, onOpenScan, onCreateCase }: 
       </div>
       {error && <div className="alert-error" role="alert" aria-live="assertive">{error}</div>}
       <ProjectLogs projectId={detail.project_id} locations={detail.log_locations ?? []} onUnauthorized={onUnauthorized} onChanged={() => void openProject(detail)} />
-      <ProjectMalware projectId={detail.project_id} jobs={detail.malware_jobs ?? []} findings={detail.findings} onUnauthorized={onUnauthorized} onChanged={refreshProject} onOpenScan={onOpenScan} />
+      <ProjectMalware projectId={detail.project_id} projectKind={detail.kind} jobs={detail.malware_jobs ?? []} findings={detail.findings} onUnauthorized={onUnauthorized} onChanged={refreshProject} onOpenScan={onOpenScan} />
       <section aria-label="Project log alerts"><h3>Project log alerts</h3>{detail.log_alerts?.length ? <ul>{detail.log_alerts.map((alert) => <li key={alert.alert_id}><strong>{alert.title}</strong> · {alert.severity}</li>)}</ul> : <p className="empty-copy">No log alerts yet.</p>}</section>
       <section aria-label="Project log events"><h3>Project log events</h3>{detail.log_events?.length ? <ul>{detail.log_events.map((event) => <li key={event.event_id}>{event.occurred_at} · {event.summary} {event.sha256} {event.file_hashes?.join(' ')}</li>)}</ul> : <p className="empty-copy">No log events yet.</p>}</section>
       <section aria-label="Project log timeline"><h3>Project log timeline</h3>{detail.log_timeline?.length ? <ol>{detail.log_timeline.map((entry) => <li key={entry.entry_id}>{entry.occurred_at} · {entry.description}</li>)}</ol> : <p className="empty-copy">No timeline entries yet.</p>}</section>
@@ -106,19 +108,20 @@ export function ProjectsWorkspace({ onUnauthorized, onOpenScan, onCreateCase }: 
       </div>)}</section>
     </div>
     {removeOpen && <div className="project-dialog-backdrop"><div className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-project-title" ref={dialogRef}>
-      <h2 id="remove-project-title">Remove {detail.name}?</h2><p>The project record and its association will be removed. <strong>Files in the folder are never touched.</strong> Existing scans, findings and cases remain in history and are marked as project removed.</p>
+      <h2 id="remove-project-title">Remove {detail.name}?</h2><p>{detail.kind === 'github' ? 'The managed imported clone and project record will be deleted.' : 'The project record and its association will be removed. Files in the folder are never touched.'} Existing scans, findings and cases remain in history and are marked as project removed.</p>
       <label htmlFor="remove-project-confirm">Type <strong>{detail.name}</strong> to confirm</label><input id="remove-project-confirm" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" />
-      <div className="project-actions"><button className="secondary-button" onClick={() => setRemoveOpen(false)}>Cancel</button><button className="danger-button" disabled={confirmation !== detail.name || removing} onClick={() => void removeProject()}>{removing ? 'Removing…' : 'Remove project record'}</button></div>
+      <div className="project-actions"><button className="secondary-button" onClick={() => setRemoveOpen(false)}>Cancel</button><button className="danger-button" disabled={confirmation !== detail.name || removing} onClick={() => void removeProject()}>{removing ? 'Removing…' : detail.kind === 'github' ? 'Remove project and clone' : 'Remove project record'}</button></div>
       {error && <p role="alert" aria-live="assertive">{error}</p>}
     </div></div>}
   </section>;
 
   return <section className="projects-workspace" aria-label="Projects">
-    <div className="panel table-panel"><div className="panel-heading"><div><h2>Projects</h2><p>Assess code from approved folders on this device.</p></div><button className="primary-button" onClick={() => { setError(''); setPickerOpen(true); }}>Add project</button></div>
+    <div className="panel table-panel"><div className="panel-heading"><div><h2>Projects</h2><p>Assess code from approved folders on this device.</p></div><div className="project-actions"><button className="secondary-button" onClick={() => { setError(''); setPickerOpen(true); }}>Add project</button><button className="primary-button" onClick={() => setImportOpen(true)}>Import from GitHub</button></div></div>
       {error && <div className="alert-error" role="alert" aria-live="assertive">{error}</div>}
       {loading ? <div className="skeleton-card" aria-label="Loading projects"/> : projects.length ? <div className="table-scroll"><table><thead><tr><th>PROJECT</th><th>KIND</th><th>CONFIGURED BY</th><th>LAST SCAN</th><th>ACTIONS</th></tr></thead><tbody>{projects.map((project) => <tr key={project.project_id}><td><strong>{project.name}</strong></td><td>{project.kind}</td><td><span className={`project-origin ${project.configured_by}`}>{project.configured_by === 'file' ? 'Configured by file' : 'Added here'}</span></td><td>{project.last_scan ?? '—'}</td><td><button className="text-button" onClick={() => void openProject(project)}>Open project</button></td></tr>)}</tbody></table></div> : <div className="empty-state"><h3>No projects yet</h3><p>Add an approved local folder to begin code assessments.</p></div>}
     </div>
     {pickerOpen && <FolderPicker dialogRef={dialogRef} onClose={() => setPickerOpen(false)} onUnauthorized={onUnauthorized} onCreated={async (project) => { setPickerOpen(false); await load(); await openProject(project); }} />}
+    {importOpen && <GitHubImportDialog onClose={() => setImportOpen(false)} onUnauthorized={onUnauthorized} onFinished={async () => { await load(); }} />}
   </section>;
 }
 

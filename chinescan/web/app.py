@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import shutil
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -29,7 +30,9 @@ from chinescan.core.cases import (
     CaseWorkflowError,
 )
 from chinescan.core.config.settings import Settings
+from chinescan.core.diagnostics import build_report, health_report
 from chinescan.core.fs_policy import FilesystemBrowserService, policy_paths
+from chinescan.core.github_import import GitHubImportError, GitHubImportService, session_binding
 from chinescan.core.log_locations import LogLocationService
 from chinescan.core.logging.redaction import redact
 from chinescan.core.logging.structured import configure_logging
@@ -216,6 +219,20 @@ class CaseLinkRequest(BaseModel):
 class CaseStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: CaseStatus
+
+
+class GitHubPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(min_length=1, max_length=300)
+    ref: str | None = Field(default=None, max_length=100)
+
+
+class GitHubImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    preview_id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+    replace_project_id: str | None = Field(default=None, max_length=80)
+    replace_confirmation: str | None = Field(default=None, max_length=120)
 
 
 class CodeJobCreateRequest(BaseModel):
@@ -457,6 +474,7 @@ def create_app(
     log_sources_path: Path | str | None = None,
     malware_registry_path: Path | str | None = None,
     settings: Settings | None = None,
+    github_import_test_file_transport: bool = False,
 ) -> FastAPI:
     """Create an application instance; sessions and throttling live in this process."""
     configure_logging()
@@ -464,7 +482,10 @@ def create_app(
     db_lock = threading.RLock()
     sessions = SessionStore(session_ttl_seconds)
     credentials = Path(credential_path)
-    migrate_legacy_operator(credentials)
+    try:
+        migrate_legacy_operator(credentials)
+    except CredentialError:
+        logging.getLogger("chinescan.auth").warning("operator_credentials_need_recovery")
     registry = ProjectRegistry(
         projects_path,
         [
@@ -500,6 +521,7 @@ def create_app(
         soft_denied,
         active_settings.allow_soft_denied,
     )
+    github_managed_directory = Path(database_path).expanduser().resolve(strict=False).parent / "gh"
     project_service = ProjectService(
         repository,
         fs_browser,
@@ -508,6 +530,7 @@ def create_app(
         hard_denied=hard_denied,
         soft_denied=soft_denied,
         allow_soft_denied=active_settings.allow_soft_denied,
+        managed_import_directory=github_managed_directory,
     )
     log_location_service = LogLocationService(repository, project_service)
     log_jobs = LogJobManager(
@@ -516,6 +539,13 @@ def create_app(
     malware_acknowledgements = MalwareAcknowledgements(repository)
     project_malware_jobs = ProjectMalwareJobs(
         repository, ProjectMalwareScanner(repository, project_service, active_settings)
+    )
+    github_imports = GitHubImportService(
+        repository,
+        active_settings,
+        github_managed_directory,
+        test_file_transport=github_import_test_file_transport,
+        project_service=project_service,
     )
     jobs = CodeJobManager(
         repository,
@@ -567,6 +597,7 @@ def create_app(
         jobs.start()
         log_jobs.start()
         project_malware_jobs.start()
+        github_imports.start_worker()
         if malware_jobs is not None:
             malware_jobs.start()
         try:
@@ -576,6 +607,7 @@ def create_app(
                 malware_jobs.stop()
             log_jobs.stop()
             project_malware_jobs.stop()
+            github_imports.stop_worker()
             jobs.stop()
         repository.close()
 
@@ -590,6 +622,9 @@ def create_app(
     application.state.log_job_manager = log_jobs
     application.state.malware_job_manager = malware_jobs
     application.state.project_malware_job_manager = project_malware_jobs
+    application.state.github_import_manager = github_imports
+    application.state.started_at = time.monotonic()
+    application.state.diagnostic_errors = []
 
     @application.exception_handler(RequestValidationError)
     async def validation_error_handler(_request: Request, exc: RequestValidationError) -> Response:
@@ -614,6 +649,21 @@ def create_app(
             status_code=exc.status_code,
             content={"detail": redact(exc.detail)},
             headers=exc.headers,
+        )
+
+    @application.exception_handler(Exception)
+    async def safe_internal_error_handler(request: Request, _exc: Exception) -> Response:
+        route = request.scope.get("route")
+        logging.getLogger("chinescan.errors").error(
+            "request_failed",
+            extra={
+                "request_id": getattr(request.state, "request_id", "unknown"),
+                "route": getattr(route, "path", "unmatched"),
+            },
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "The request could not be completed."},
         )
 
     @application.middleware("http")
@@ -683,6 +733,20 @@ def create_app(
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         route = request.scope.get("route")
+        if response.status_code >= 400 and request.url.path.startswith("/api/"):
+            error_ring = application.state.diagnostic_errors
+            error_ring.append(
+                {
+                    "error_code": f"http_{response.status_code}",
+                    "route": str(getattr(route, "path", "unmatched"))[:120],
+                    "request_id": request_id,
+                    "timestamp": datetime.now().astimezone().isoformat(),
+                    "message": "Request could not be completed."
+                    if response.status_code >= 500
+                    else "Request was rejected.",
+                }
+            )
+            del error_ring[:-50]
         logging.getLogger("chinescan.access").info(
             "request_complete",
             extra={
@@ -718,6 +782,68 @@ def create_app(
             raise HTTPException(status_code=401, detail="Authentication required.") from None
         return session
 
+    diagnostics_throttle = LoginThrottle(limit=12, window_seconds=60)
+
+    def allow_diagnostics(request: Request) -> None:
+        key = "diagnostics:" + (request.client.host if request.client else "unknown")
+        if not diagnostics_throttle.allowed(key):
+            raise HTTPException(
+                status_code=429, detail="Diagnostics rate limit reached; retry shortly."
+            )
+
+    @application.get("/api/health")
+    def health() -> dict[str, Any]:
+        return health_report(started_at=application.state.started_at, bind_address="127.0.0.1")
+
+    @application.get("/api/ready")
+    def ready(request: Request, _session: Session = Depends(current_session)) -> Response:  # noqa: B008
+        allow_diagnostics(request)
+        report = build_report(
+            settings=active_settings,
+            database_path=database_path,
+            credential_path=credentials,
+            frontend_dist=FRONTEND_DIST,
+            errors=application.state.diagnostic_errors,
+        )
+        readiness_ids = {
+            "config",
+            "credentials",
+            "database",
+            "directories",
+            "frontend",
+            "filesystem-policy",
+            "managed-malware",
+        }
+        checks = [dict(item) for item in report["checks"] if item["id"] in readiness_ids]
+        if report["operator_state"] != "active":
+            for item in checks:
+                if item["id"] == "credentials":
+                    item["state"] = "FAIL"
+                    item["detail"] = "Credential store is not active and schema-valid."
+                    item["action_hint"] = "Create or migrate the local operator credential store."
+        failures = any(item["state"] == "FAIL" for item in checks)
+        warnings = any(item["state"] == "WARN" for item in checks)
+        state = "failed" if failures else "degraded" if warnings else "ok"
+        response = JSONResponse(
+            {"state": state, "checks": checks, "allowed_roots": report["allowed_roots"]},
+            status_code=503 if failures else 200,
+        )
+        return response
+
+    @application.get("/api/diagnostics")
+    def diagnostics(
+        request: Request,
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:
+        allow_diagnostics(request)
+        return build_report(
+            settings=active_settings,
+            database_path=database_path,
+            credential_path=credentials,
+            frontend_dist=FRONTEND_DIST,
+            errors=application.state.diagnostic_errors,
+        )
+
     def require_csrf(
         session: Session = Depends(current_session),  # noqa: B008
         token: str | None = Cookie(default=None, alias=COOKIE_NAME),
@@ -728,6 +854,110 @@ def create_app(
         if not csrf_header or not secrets.compare_digest(session.csrf_token, csrf_header):
             raise HTTPException(status_code=403, detail="CSRF validation failed.")
         return session
+
+    def github_import_enabled() -> None:
+        if not active_settings.github_import_enabled:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "feature_disabled", "message": "GitHub import is disabled."},
+            )
+
+    github_import_throttle = LoginThrottle(limit=10, window_seconds=60)
+
+    def github_import_error(exc: GitHubImportError) -> HTTPException:
+        status_code = (
+            422
+            if exc.code in {"invalid_url", "invalid_ref", "invalid_name"}
+            else 429
+            if exc.code in {"queue_full", "rate_limited"}
+            else 404
+            if exc.code == "job_not_found"
+            else 409
+            if exc.code.startswith("preview_")
+            else 503
+            if exc.code == "git_missing"
+            else 400
+        )
+        return HTTPException(status_code, detail={"code": exc.code, "message": str(exc)})
+
+    def allow_github_import(request: Request) -> None:
+        client_ip = request.client.host if request.client else "unknown"
+        if not github_import_throttle.allowed("github-import:" + client_ip):
+            raise HTTPException(
+                status_code=429,
+                detail={"code": "rate_limited", "message": "GitHub import rate limit reached."},
+            )
+
+    @application.get("/api/github/status")
+    def github_import_status_info(
+        _session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:
+        return {
+            "enabled": active_settings.github_import_enabled,
+            "git_available": shutil.which("git") is not None,
+            "max_bytes": active_settings.github_import_max_bytes,
+            "max_files": active_settings.github_import_max_files,
+            "max_projects": active_settings.github_import_max_projects,
+            "timeout_seconds": active_settings.github_import_timeout_seconds,
+        }
+
+    @application.post("/api/github/previews")
+    def github_preview(
+        payload: GitHubPreviewRequest,
+        request: Request,
+        session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:
+        github_import_enabled()
+        allow_github_import(request)
+        try:
+            return github_imports.preview(
+                session_binding(session.csrf_token), payload.url, payload.ref
+            )
+        except GitHubImportError as exc:
+            raise github_import_error(exc) from exc
+
+    @application.post("/api/github/imports", status_code=202)
+    def github_import(
+        payload: GitHubImportRequest,
+        request: Request,
+        session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:
+        github_import_enabled()
+        allow_github_import(request)
+        try:
+            return github_imports.start(
+                session_binding(session.csrf_token),
+                payload.preview_id,
+                payload.name,
+                replace_project_id=payload.replace_project_id,
+                replace_confirmation=payload.replace_confirmation,
+            )
+        except GitHubImportError as exc:
+            raise github_import_error(exc) from exc
+
+    @application.get("/api/github/imports/{job_id}")
+    def github_import_status(
+        job_id: str,
+        session: Session = Depends(current_session),  # noqa: B008
+    ) -> dict[str, Any]:
+        github_import_enabled()
+        try:
+            return github_imports.get(session_binding(session.csrf_token), job_id)
+        except GitHubImportError as exc:
+            raise github_import_error(exc) from exc
+
+    @application.post("/api/github/imports/{job_id}/cancel")
+    def github_import_cancel(
+        job_id: str,
+        _request: Request,
+        session: Session = Depends(require_csrf),  # noqa: B008
+    ) -> dict[str, Any]:
+        github_import_enabled()
+        allow_github_import(_request)
+        try:
+            return github_imports.cancel(session_binding(session.csrf_token), job_id)
+        except GitHubImportError as exc:
+            raise github_import_error(exc) from exc
 
     auth_lockout = ProgressiveLockout()
 

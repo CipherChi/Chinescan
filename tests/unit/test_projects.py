@@ -60,6 +60,23 @@ def _selection(client: TestClient) -> str:
     return roots.json()["items"][0]["directory_id"]
 
 
+def test_github_import_api_is_stably_disabled_by_default(tmp_path: Path) -> None:
+    _app, client, headers = _client(tmp_path, [])
+    preview = client.post(
+        "/api/github/previews", json={"url": "https://github.com/a/b"}, headers=headers
+    )
+    assert preview.status_code == 403
+    assert preview.json()["detail"]["code"] == "feature_disabled"
+    imported = client.post(
+        "/api/github/imports", json={"preview_id": "fixture", "name": "Fixture"}, headers=headers
+    )
+    assert imported.status_code == 403
+    assert imported.json()["detail"]["code"] == "feature_disabled"
+    status = client.get("/api/github/imports/fixture")
+    assert status.status_code == 403
+    assert status.json()["detail"]["code"] == "feature_disabled"
+
+
 def test_project_log_locations_are_path_free_and_removal_keeps_files(tmp_path: Path) -> None:
     root = tmp_path / "approved"
     logs = root / "logs"

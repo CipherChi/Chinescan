@@ -26,6 +26,8 @@ def configure(
 
 
 app.command("version")(commands.version)
+app.command("doctor")(commands.doctor)
+app.command("status")(commands.status)
 app.add_typer(commands.config_app, name="config")
 app.command("code")(commands.code_scan)
 app.command("logs")(commands.logs_ingest)
@@ -79,3 +81,10 @@ if __name__ == "__main__":
     main()
 app.add_typer(commands.fs_app, name="fs")
 app.add_typer(commands.projects_app, name="projects")
+
+github_app = typer.Typer(help="Public GitHub import (disabled unless configured).")
+github_app.command("preview")(commands.github_preview)
+github_app.command("import")(commands.github_import)
+github_app.command("status")(commands.github_status)
+github_app.command("cancel")(commands.github_cancel)
+app.add_typer(github_app, name="github")

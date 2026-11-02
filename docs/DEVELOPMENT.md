@@ -40,6 +40,46 @@ uv run chinescan compare BASELINE_SCAN_ID CURRENT_SCAN_ID
 uv run chinescan trends --days 30 --format json
 ```
 
+### Local diagnostics
+
+Run `uv run chinescan doctor` for the full read-only local environment report, or
+`uv run chinescan doctor --json` for machine-readable output. `uv run chinescan status` prints a
+short summary; both commands accept `--json`. Exit status is `0` when all checks pass, `1` when
+one or more checks warn, and `2` when a check fails. Output uses ASCII `[PASS]`, `[WARN]`, and
+`[FAIL]` markers and honors `NO_COLOR`. Doctor does not access the network, modify configuration,
+write to the database, or change listeners. Its network-backed optional features (`pip-audit`,
+`npm audit`, and authorized domain posture checks) are listed as opt-in.
+
+The loopback dashboard exposes unauthenticated `GET /api/health` with only `status`, `app_name`,
+`version`, `uptime_seconds`, `bind_address`, and `timestamp`. Authenticated `GET /api/ready`
+returns `{state, checks, allowed_roots}`; checks have `id`, `label`, `state`, `detail`, and
+`action_hint`. It returns HTTP 200 for healthy or degraded status and 503 when a check fails.
+Authenticated `GET /api/diagnostics` returns platform/runtime and application versions, config and
+storage states, operator state, root and deny-list counts, feature flags, scan bounds, record counts,
+the shared checks, and up to 50 recent redacted error summaries. Readiness and diagnostics are
+rate-limited. All routes retain loopback Host and same-origin protections.
+
+The System status page offers **Check now** to refresh health, readiness, and diagnostics immediately.
+Automatic healthy polling runs every 30 seconds. After a connection failure, retry intervals grow
+exponentially from 1 second and cap at 60 seconds; a successful response resets the retry interval.
+An unauthenticated browser session returns to operator login before detailed status panels appear.
+
+Doctor checks Python/uv and Node/npm availability, Python environment integrity, frontend dependency
+lock consistency and build presence, local ports 5173 and 8765, credentials schema, config and
+database access, required directories, filesystem policy, offline readiness, and managed malware
+storage. Fix hints accompany non-passing checks: install or repair the named tool/dependencies,
+restore a valid credential/config, repair local database access, create required directories,
+correct allowed roots or deny entries, or inspect an existing port listener without stopping it.
+Missing managed malware storage is a warning; project scans do not require it.
+
+Diagnostics payloads use logical labels and counts rather than absolute internal paths. Credential
+contents, tokens, request bodies, and stack traces are never included. Error summaries contain a
+stable code, route, request ID, timestamp, and redacted message; the in-memory ring retains at most
+50 entries. If diagnostics cannot load, verify the loopback service and local configuration first,
+then run `uv run chinescan doctor --json` with the same selected config and database options used by
+the service. For browser access, confirm that the local operator session is active; the health route
+is public, while readiness and diagnostics require authentication.
+
 Dashboard frontend development additionally requires Node.js 22.12+ and npm. The frontend uses
 React, TypeScript, Vite, Vitest, Testing Library, and Playwright; install its locked dependencies
 with `npm ci --no-audit` from `frontend/`. Run the backend explicitly with
@@ -208,3 +248,31 @@ Use the repository's uv-managed environment for development commands. If `uv run
 # EVTX log support
 
 EVTX files are detected by project log suggestions and shown as unsupported until a parser is available. A future parser should use a bounded, read-only implementation: accept only regular files approved by filesystem policy, cap file bytes, records, nesting, and elapsed time, parse from a bounded stream without executing embedded content, and return a partial result with skipped counts when a cap is reached. It must not upload samples or write beside the source file.
+
+# GitHub imports
+
+Public GitHub imports are opt-in. The default is `github_import_enabled = false`; enable it only
+with an explicit operator change in the local `config.toml` and restart ChineScan:
+
+```toml
+github_import_enabled = true
+github_import_timeout_seconds = 120
+github_import_max_bytes = 524288000
+github_import_max_files = 50000
+github_import_max_projects = 20
+```
+
+The URL preview is local validation only. Import is a second explicit action. Fetches are shallow,
+skip submodules and LFS, disable hooks, reject links/reparse points and unsafe names, and refuse
+redirects. Repository content is never executed, installed, imported, or opened by another
+program. Git metadata has a separate bounded allowance. DNS and TLS use the operating system.
+Import and scan inside a VM; the local scanner is not an OS sandbox.
+
+Troubleshooting: install Git if the UI reports `git_missing`; inspect system security history if
+files are quarantined and the job is incomplete (never disable Defender); `repo_not_found_or_private`
+means the public repository may not exist or may be private; reduce content when the size or file
+caps are reached. The default limits are 120 seconds, 500 MiB of project content, 50,000 files,
+and 20 GitHub projects. If `path_too_long` is reported, shorten the configured data directory. The
+managed clone uses the short `gh` subfolder; doctor and API diagnostics report only `ok` or
+`at-risk` for the Windows path budget and never print the path. Private-repository tokens are
+unsupported.

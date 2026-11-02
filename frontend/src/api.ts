@@ -1,4 +1,4 @@
-import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogSourceRegistryStatus, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample, ProjectDetail, ProjectSummary, ProjectLogLocation, ProjectLogSuggestion, ProjectLogJob, ProjectMalwareJob, MalwareHostHint, FsDirectory, FsPage } from './types';
+import type { CaseData, CaseSummary, CodeJob, CodeProject, Finding, Overview, Page, Scan, LogSource, LogSourceRegistryStatus, LogJob, LogAlert, LogEvent, LogTimeline, MalwareAnalysis, MalwareCapability, MalwareJob, MalwareSample, ProjectDetail, ProjectSummary, ProjectLogLocation, ProjectLogSuggestion, ProjectLogJob, ProjectMalwareJob, MalwareHostHint, FsDirectory, FsPage, GitHubImportCapabilities, GitHubImportPreview, GitHubImportJob } from './types';
 
 let csrfToken = '';
 export function setCsrfToken(token: string) { csrfToken = token; }
@@ -17,15 +17,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
+    const code = typeof detail.detail?.code === 'string' ? detail.detail.code : undefined;
     const message = typeof detail.detail === 'string'
       ? detail.detail
       : typeof detail.detail?.message === 'string' ? detail.detail.message : 'The request could not be completed.';
-    throw new Error(message);
+    throw new ApiError(message, code);
   }
   return response.json() as Promise<T>;
 }
 
 export class UnauthorizedError extends Error {}
+export class ApiError extends Error { constructor(message: string, readonly code?: string) { super(message); } }
 export const api = {
   session: () => request<{ authenticated: boolean; email_masked: string | null; signup_available: boolean }>('/api/auth/session'),
   csrf: () => request<{ csrf_token: string }>('/api/auth/csrf'),
@@ -59,6 +61,11 @@ export const api = {
     return request<FsPage>(`/api/fs/list?${query}`);
   },
   projects: () => request<ProjectSummary[]>('/api/projects'),
+  githubImportCapabilities: () => request<GitHubImportCapabilities>('/api/github/status'),
+  previewGitHubImport: (url: string, ref?: string) => request<GitHubImportPreview>('/api/github/previews', { method: 'POST', body: JSON.stringify({ url, ref: ref || null }) }),
+  startGitHubImport: (preview_id: string, name: string, replacement?: { replace_project_id: string; replace_confirmation: string }) => request<GitHubImportJob>('/api/github/imports', { method: 'POST', body: JSON.stringify({ preview_id, name, ...replacement }) }),
+  githubImportJob: (jobId: string) => request<GitHubImportJob>(`/api/github/imports/${encodeURIComponent(jobId)}`),
+  cancelGitHubImport: (jobId: string) => request<GitHubImportJob>(`/api/github/imports/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', body: '{}' }),
   project: (id: string) => request<ProjectDetail>(`/api/projects/${encodeURIComponent(id)}`),
   addProject: (name: string, directory_id: string) => request<ProjectSummary>('/api/projects', { method: 'POST', body: JSON.stringify({ name, directory_id }) }),
   removeProject: (id: string, confirmation: string) => request<{ status: string }>(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ confirmation }) }),
