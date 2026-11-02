@@ -43,16 +43,29 @@ _REPO = re.compile(r"[A-Za-z0-9._-]{1,100}\Z", re.ASCII)
 _REF = re.compile(r"[A-Za-z0-9._/-]{1,100}\Z", re.ASCII)
 _SHA = re.compile(r"[0-9A-Fa-f]{40}\Z", re.ASCII)
 _DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?\Z", re.IGNORECASE)
+_WINDOWS_PATH_LIMIT = 260
+_WINDOWS_CLONE_PATH_BUDGET = 160
 _GIT_ERROR_MAP: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (
         (
             "repository not found",
-            "not found",
-            "could not read from remote repository",
-            "access denied",
+            "http 404",
         ),
         "repo_not_found_or_private",
         "The public repository could not be found. Check its URL and visibility.",
+    ),
+    (
+        (
+            "does not appear to be a git repository",
+            "could not read from remote repository",
+            "protocol 'file' is not allowed",
+            "transport 'file' not allowed",
+            "unsupported protocol",
+            "invalid url",
+            "no such file or directory",
+        ),
+        "import_unavailable",
+        "Git could not access this public source. Verify its URL and try again.",
     ),
     (
         (
@@ -66,11 +79,25 @@ _GIT_ERROR_MAP: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "GitHub could not be reached from this network. Try again later.",
     ),
     (
-        ("invalid path", "unable to create file", "filename too long", "invalid argument"),
+        ("filename too long", "path too long", "file name too long"),
+        "path_too_long",
+        "The import location path is too long; use a shorter managed import directory.",
+    ),
+    (
+        ("invalid path", "unable to create file", "invalid argument"),
         "unsafe_entries",
         "The repository contains a file name that is unsafe on this system.",
     ),
 )
+
+
+def import_path_at_risk(import_root: Path, *, windows: bool | None = None) -> bool:
+    """Return whether a conservative Git checkout path budget exceeds Windows MAX_PATH."""
+    is_windows = os.name == "nt" if windows is None else windows
+    if not is_windows:
+        return False
+    root_length = len(os.path.abspath(import_root.expanduser()))
+    return root_length + _WINDOWS_CLONE_PATH_BUDGET > _WINDOWS_PATH_LIMIT
 
 
 @dataclass(frozen=True, slots=True)
@@ -565,11 +592,19 @@ class GitHubImportService:
         except OSError:
             self._cleanup_job_clone(job)
             self._finish(job, "incomplete", "quarantined_or_missing_files", _INCOMPLETE_MESSAGE)
+        except ProjectError as exc:
+            self._cleanup_job_clone(job)
+            self._finish(job, "failed", exc.code, str(exc))
         except Exception:
             self._cleanup_job_clone(job)
             self._finish(job, "failed", "network_unreachable", "The import could not be completed.")
 
     def _fetch(self, job: _Job) -> None:
+        if import_path_at_risk(self.managed_directory):
+            raise GitHubImportError(
+                "path_too_long",
+                "The import location path is too long; use a shorter managed import directory.",
+            )
         self.managed_directory.mkdir(parents=True, exist_ok=True)
         self._assert_managed_directory()
         target = job.clone_path

@@ -1,10 +1,12 @@
 """GitHub source validation tests; fixtures are constructed from runtime strings."""
 
+import atexit
 import ctypes
 import io
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -22,6 +24,8 @@ from chinescan.core.github_import import (
     GitHubImportService,
     build_clone_argv,
     build_git_environment,
+    guarded_test_file_repository_url,
+    import_path_at_risk,
     validate_github_url,
     validate_ref,
 )

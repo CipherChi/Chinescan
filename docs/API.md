@@ -107,6 +107,32 @@ automatically. Operator-selected backup or report directories can also be listed
 `protected_paths`; this dashboard has no managed backup/export directory and report downloads are
 generated in memory. Raw scanner logs and source text are not sent to the browser.
 
+## Public GitHub imports (Phase 6C)
+
+Public imports remain disabled unless `github_import_enabled = true` is set in local configuration.
+Preview makes no network request; importing requires a separate explicit request with a valid
+session-bound preview. The service uses a short `gh` subdirectory under the configured data
+directory, rejects Windows checkout paths that exceed its conservative MAX_PATH budget before Git
+starts, and returns `path_too_long` with the safe message “The import location path is too long; use
+a shorter managed import directory.” Git filename-length errors use the same code. The CLI's
+`github preview|import|status|cancel` commands print stable error codes and safe messages to stderr
+(or JSON with `--json`) and exit with status 2 on failure. `chinescan doctor` and
+`GET /api/diagnostics` report the import-path budget as `ok` or `at-risk` without revealing any
+path; the import check is WARN for an at-risk path only while imports are enabled.
+
+| Method and path | Access | Contract |
+| --- | --- | --- |
+| `POST /api/github/previews` | Authenticated + CSRF + same-origin | `{url, ref?}`; validates a public GitHub URL and returns a session-bound preview and configured caps, without network access. |
+| `POST /api/github/imports` | Authenticated + CSRF + same-origin | `{preview_id, name}`; consumes a preview once and returns `202` with a queued job. |
+| `GET /api/github/imports/{job_id}` | Authenticated | Session-owned job status, phase, safe message/code, and verified metadata on success. |
+| `POST /api/github/imports/{job_id}/cancel` | Authenticated + CSRF + same-origin | Requests cancellation of a session-owned job. |
+
+Job failures use stable codes including `path_too_long`, `unsafe_entries`, `quota_exceeded`,
+`repo_not_found_or_private`, and `network_unreachable`. `path_too_long` means the configured managed
+import location leaves insufficient room for a safe checkout path; shorten the configured data
+directory and retry. It is distinct from `unsafe_entries`, which indicates a repository entry
+violated a file-system safety rule.
+
 ## Cases and report downloads (Slice 2)
 
 Every case route requires an authenticated session. Case creation, status changes, notes, and links
