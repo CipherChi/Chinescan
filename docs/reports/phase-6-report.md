@@ -213,3 +213,101 @@ On PR #13 head `be7daf6`, `gh pr checks 13 --watch` completed with every configu
 quality (`400 passed, 7 skipped, 5 deselected`; 80.23% coverage), dashboard build and browser
 acceptance, container, Windows managed malware worker acceptance, secret scan, CodeQL, and the
 Actions, JavaScript/TypeScript, and Python analysis jobs. The draft remains open and unmerged.
+
+## Phase 6C status
+
+The seven skips in the Phase 6B CI quality run are all platform-conditional:
+
+| Test | Skip reason |
+| --- | --- |
+| `test_actual_windows_contained_worker_returns_bounded_synthetic_result` | Requires Windows Job Objects. |
+| `test_actual_windows_manager_persists_contained_synthetic_analysis` | Requires Windows Job Objects. |
+| `test_actual_job_object_terminates_synthetic_child_process_tree` | Requires Windows Job Objects. |
+| `test_scanner_rechecks_policy_after_project_root_junction_swap` | Requires NTFS directory junction support. |
+| `test_windows_short_name_is_expanded_before_deny_check` | Requires Windows 8.3 short names. |
+| `test_windows_drive_type_remote_is_denied` | Requires Windows `GetDriveTypeW`. |
+| `test_local_bare_repository_import_verifies_sha_and_removes_git` | The short-path alias assertion applies only on Windows. |
+
+The realistic `.git` quota regression is
+`tests/unit/test_github_import.py::test_local_bare_repository_import_verifies_sha_and_removes_git`.
+It imports a runtime-built ordinary bare repository with about 27–30 KiB of Git metadata and
+sets the worktree content cap to exactly the content length plus 8 bytes. The worktree stays under
+its cap while `.git` uses its separate bounded allowance.
+
+### Phase 6C URL seam diagnosis and verification — 2026-11-02
+
+The original E2E import failure was caused by the browser harness encoding the runtime fixture
+path twice. Node's `pathToFileURL` output contained an escaped percent sequence for the Windows
+short-path component; Python treated that escaped text as a literal filesystem path and then
+encoded the percent again. The runner consequently passed Git
+`file:///C:/Users/CIPHER%25257E1/AppData/Local/Temp/chinescan-playwright-kIbuIJ/instance-5-ttl-1800/public-repository.git`
+instead of the fixture's canonical local file URL. Git exited 128 and stderr said the source
+“does not appear to be a git repository”; this came from the local path not existing. It was not a
+protocol denial, nor a GitHub 404/private response. The child environment included
+`GIT_ALLOW_PROTOCOL=https:file`, the test-only `protocol.file.allow=always` override, and no
+`SystemRoot`; Git ran successfully, so the missing variable was not the cause.
+
+The passing unit fixture previously used `Path.as_uri()` directly and therefore did not traverse
+the Node URL conversion. The fix centralizes canonical local test URL creation in the guarded
+`guarded_test_file_repository_url` helper, uses that helper in both the browser server announcement
+and unit tests, and converts a parsed file URL with `url2pathname` before canonicalizing it. The
+production URL validator remains HTTPS GitHub-only, and construction of the file transport seam
+still requires the test guard.
+
+The error table had also classified Git's generic “could not read from remote repository” as
+`repo_not_found_or_private`. That text also describes invalid local paths and protocol failures.
+The mapping now limits `repo_not_found_or_private` to explicit repository-not-found/HTTP 404
+messages and maps local path/protocol errors to `import_unavailable`. Parametrized mapping tests
+cover both outcomes.
+
+| Verification | Result |
+| --- | --- |
+| Focused public GitHub import E2E | 1 passed; preview, import, project assessment, malware VM guidance, typed removal, and clone deletion completed. |
+| Full browser E2E run 1 | 17 passed. |
+| Full browser E2E run 2 | 17 passed. |
+| Frontend typecheck and production build | Passed in the OS-temp frontend copy. |
+| Frontend unit suite, three runs | 47 passed per run. |
+| Screenshot files | `%TEMP%\chinescan-phase6c-screenshots\github-preview.png`, `github-progress.png`, `github-success.png`, and `github-disabled.png`. |
+| `uv run --locked --extra dev ruff check .` | Passed. |
+| `uv run --locked --extra dev ruff format --check .` | Passed; 159 files formatted. |
+| `uv run --locked --extra dev mypy --strict chinescan` | Passed; 65 source files. |
+| `uv run --locked --extra dev bandit --severity-level medium -r chinescan` | Passed; no medium/high findings. |
+| `uv run python -m compileall -q chinescan` | Passed. |
+| Full backend suite with 80% coverage floor, two runs | Each run: 412 passed, 6 failed, 5 deselected; 81.47% coverage. Both reported `test_api_preview_then_import_job_is_session_bound_and_path_free` with terminal `error_code=unsafe_entries`, `test_pinned_sha_uses_shallow_fetch_and_records_exact_commit`, `test_submodule_entry_is_not_fetched_and_lfs_pointer_is_not_smudged`, both cases of `test_oversized_and_too_many_project_files_fail_quota`, and `test_ads_is_detected_and_incomplete_when_a_tracked_file_vanishes`. The API test passes alone, and a later standalone GitHub test-file run passed 74/74. The full-suite discrepancy remains unresolved and blocks publication. |
+
+The first backend gate invocation used a pre-existing `--basetemp` folder and failed at fixture
+setup with `FileExistsError`. The follow-up investigation showed that the test temp path itself was
+the trigger, rather than order-dependent state: with the long
+`chinescan-phase6c-pytest-<GUID>` base, Git emits `filename too long` while checking out under the
+nested API test directory, and the mapper returns the stable external code `unsafe_entries`. The
+same API test failed once in isolation with coverage and that long base, proving there is no
+polluter/victim pair. With a short unique OS-temp base (`c6a-<4 hex>` etc.), three complete backend
+runs each passed 418 tests with 5 platform deselections and 81.61% coverage. A fourth run with all
+test modules supplied in reverse path order also passed 418 tests with 5 deselections and 81.61%
+coverage. `-p no:cacheprovider -x` baseline also passed 418 tests with 5 deselections. No module
+global caches, queues, environment mutations, or cwd changes were found in the GitHub importer,
+filesystem policy, or project modules. Temporary raw stderr instrumentation was removed; it wrote
+only under a test's OS-temp directory and its log was deleted. No product code or tests were changed
+for this investigation. No new commit or push was made, and no current-head CI status is available.
+
+### Phase 6C path-length handling — 2026-11-02
+
+The prior full-suite failures were not caused by order-dependent state. Long Windows pytest temp
+paths caused Git to report `filename too long`; that was being classified as `unsafe_entries`. The
+error table now maps Git filename/path-too-long diagnostics to `path_too_long`, with the safe
+message to shorten the managed import directory. Actual unsafe names remain `unsafe_entries`.
+Before starting Git, the importer checks that the managed root plus a 160-character checkout-path
+budget stays within the conservative 260-character Windows limit. The default managed directory
+is now the short `gh` child of the data directory. Doctor and API diagnostics report only `ok` or
+`at-risk`, and warn only when imports are enabled. CI pytest uses the short OS-temp path
+`${RUNNER_TEMP}/c6`; GitHub unit fixtures use an isolated short OS-temp clone root so their
+test-function directory names do not consume the product's checkout budget.
+
+Initial focused tests correctly revealed that the preflight budget also rejected imports whose
+*test* managed root inherited a long pytest function-name path. After moving those test clone roots
+to short OS-temp directories, the focused GitHub import and project suites plus the doctor warning
+test passed: 81 passed. A smaller targeted rerun covering path-too-long mapping/preflight, the
+genuinely hostile symlink/reparse fixture, and doctor warning passed: 12 passed. The Windows
+overlong repository fixture now expects `path_too_long` (Git cannot materialize that tree before
+post-clone verification); reserved device names, trailing dots/spaces, ADS, links/reparse points,
+and outside-root entries remain `unsafe_entries`.

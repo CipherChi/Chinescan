@@ -251,8 +251,28 @@ EVTX files are detected by project log suggestions and shown as unsupported unti
 
 # GitHub imports
 
-Public GitHub imports are disabled and not yet implemented. Keep `github_import_enabled = false`.
-The URL validator accepts only public `github.com` repository URLs, and authenticated preview/import
-API and CLI entry points fail closed. Do not set the flag to true: the managed clone runner, project
-lifecycle, and UI flow are not present yet. No import request may run repository content or use
-private-repository credentials.
+Public GitHub imports are opt-in. The default is `github_import_enabled = false`; enable it only
+with an explicit operator change in the local `config.toml` and restart ChineScan:
+
+```toml
+github_import_enabled = true
+github_import_timeout_seconds = 120
+github_import_max_bytes = 524288000
+github_import_max_files = 50000
+github_import_max_projects = 20
+```
+
+The URL preview is local validation only. Import is a second explicit action. Fetches are shallow,
+skip submodules and LFS, disable hooks, reject links/reparse points and unsafe names, and refuse
+redirects. Repository content is never executed, installed, imported, or opened by another
+program. Git metadata has a separate bounded allowance. DNS and TLS use the operating system.
+Import and scan inside a VM; the local scanner is not an OS sandbox.
+
+Troubleshooting: install Git if the UI reports `git_missing`; inspect system security history if
+files are quarantined and the job is incomplete (never disable Defender); `repo_not_found_or_private`
+means the public repository may not exist or may be private; reduce content when the size or file
+caps are reached. The default limits are 120 seconds, 500 MiB of project content, 50,000 files,
+and 20 GitHub projects. If `path_too_long` is reported, shorten the configured data directory. The
+managed clone uses the short `gh` subfolder; doctor and API diagnostics report only `ok` or
+`at-risk` for the Windows path budget and never print the path. Private-repository tokens are
+unsupported.

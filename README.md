@@ -140,10 +140,26 @@ The default SQLite database and report locations are local user-data paths. Conf
 
 ## Public GitHub imports
 
-Public repository imports are not available yet. `github_import_enabled` defaults to `false`; the
-current CLI and authenticated API fail closed with `feature_disabled`. Do not enable the setting
-until the managed-copy import runner is delivered. Imports, when implemented, will be limited to
-public GitHub repositories and intended for use inside a VM before scanning.
+Public GitHub imports are opt-in and disabled by default. To enable them, add the following to
+your local `config.toml` and restart ChineScan:
+
+```toml
+github_import_enabled = true
+github_import_timeout_seconds = 120
+github_import_max_bytes = 524288000
+github_import_max_files = 50000
+github_import_max_projects = 20
+```
+
+Imports are shallow, do not fetch submodules or Git LFS content, do not run hooks or repository
+content, reject links and unsafe filenames, and refuse redirects. Git metadata has a separate
+bounded allowance. Import and scan public repositories inside a VM. Files quarantined or removed
+by Defender can produce an incomplete import; review system security history without disabling
+Defender. Git must be installed. “Not found or private” means only public repositories are
+supported; private-repository credentials are not used. Imports can fail at the configured size,
+file-count, time, or project cap. If the UI reports `path_too_long`, shorten the configured data
+directory; the managed clone uses a short `gh` subfolder, and doctor reports an at-risk Windows
+path budget without printing the path.
 
 ## Security and responsible use
 
