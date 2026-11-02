@@ -266,14 +266,14 @@ cover both outcomes.
 | Full browser E2E run 1 | 17 passed. |
 | Full browser E2E run 2 | 17 passed. |
 | Frontend typecheck and production build | Passed in the OS-temp frontend copy. |
-| Frontend unit suite, three runs | 47 passed per run. |
+| Frontend unit suite, three earlier runs | 47 passed per run. The final suite has 48 tests after the `path_too_long` dialog state was added. |
 | Screenshot files | `%TEMP%\chinescan-phase6c-screenshots\github-preview.png`, `github-progress.png`, `github-success.png`, and `github-disabled.png`. |
 | `uv run --locked --extra dev ruff check .` | Passed. |
 | `uv run --locked --extra dev ruff format --check .` | Passed; 159 files formatted. |
 | `uv run --locked --extra dev mypy --strict chinescan` | Passed; 65 source files. |
 | `uv run --locked --extra dev bandit --severity-level medium -r chinescan` | Passed; no medium/high findings. |
 | `uv run python -m compileall -q chinescan` | Passed. |
-| Full backend suite with 80% coverage floor, two runs | Each run: 412 passed, 6 failed, 5 deselected; 81.47% coverage. Both reported `test_api_preview_then_import_job_is_session_bound_and_path_free` with terminal `error_code=unsafe_entries`, `test_pinned_sha_uses_shallow_fetch_and_records_exact_commit`, `test_submodule_entry_is_not_fetched_and_lfs_pointer_is_not_smudged`, both cases of `test_oversized_and_too_many_project_files_fail_quota`, and `test_ads_is_detected_and_incomplete_when_a_tracked_file_vanishes`. The API test passes alone, and a later standalone GitHub test-file run passed 74/74. The full-suite discrepancy remains unresolved and blocks publication. |
+| Full backend suite with 80% coverage floor, two historical diagnostic runs | Each run: 412 passed, 6 failed, 5 deselected; 81.47% coverage. The subsequent short-basetemp runs documented below resolved the temp-path issue; the final path-code follow-up and verification results are recorded at the end of this report. |
 
 The first backend gate invocation used a pre-existing `--basetemp` folder and failed at fixture
 setup with `FileExistsError`. The follow-up investigation showed that the test temp path itself was
@@ -323,3 +323,31 @@ mapping, while Linux reaches the verifier; both environments need the same stabl
 `path_too_long` result. The verifier now maps that path-length rule to `path_too_long` and uses the
 same safe shorter-managed-directory message. Other entry safety checks remain `unsafe_entries`.
 The focused cross-platform regression test and stderr mapping test passed locally (2 passed).
+
+### Phase 6C final verification — 2026-11-02
+
+The verifier-side path-length rule now returns `path_too_long`, closing the Linux-only route that
+the initial CI run exposed. The later CI quality run passed the complete backend suite. Final
+local gates on commit `939f9f0`:
+
+| Gate | Result |
+| --- | --- |
+| Backend suite with coverage floor | 422 passed, 5 platform deselections, 81.67% coverage (80% required). |
+| Ruff check and format check | Passed. |
+| Strict mypy | Passed; 65 source files. |
+| Bandit medium+ | Passed; no medium/high findings. |
+| Compileall and `git diff --check` | Passed. |
+| Frontend typecheck and build | Passed in the full OS-temp repository copy. |
+| Frontend unit suite | 48 passed on each of 3 runs. |
+| Frontend browser suite | 17 passed on each of 2 runs. |
+
+The first e2e attempt against the temp copy failed before loading the dashboard because that
+attempt copied only `frontend/` and omitted the sibling backend harness and built `frontend/dist`.
+No application tests ran in that attempt. The corrected gate synced the full repository into
+`%TEMP%\\c6-phase6c`, excluded credentials, local configuration, databases, `.git`, and
+`node_modules`, built the frontend in that copy, and then passed both complete e2e runs.
+
+The PR #13 check run for `939f9f0` passed all checks: `quality`, `dashboard build and browser
+acceptance`, `Windows managed malware worker acceptance`, `container`, `secret scan`, CodeQL, and
+the CodeQL Actions/JavaScript-TypeScript/Python analyses. The PR is open and ready for review;
+it was not merged or approved.
