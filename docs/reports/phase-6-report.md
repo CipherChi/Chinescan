@@ -311,3 +311,15 @@ genuinely hostile symlink/reparse fixture, and doctor warning passed: 12 passed.
 overlong repository fixture now expects `path_too_long` (Git cannot materialize that tree before
 post-clone verification); reserved device names, trailing dots/spaces, ADS, links/reparse points,
 and outside-root entries remain `unsafe_entries`.
+
+### Phase 6C CI follow-up — 2026-11-02
+
+The first CI run on `c2d959f` passed the frontend/browser, secret scan, CodeQL, Windows managed
+malware worker, and container checks. CI quality failed in
+`tests/unit/test_github_import.py::test_overlong_repository_path_is_rejected`: on Linux Git
+materialized the deep fixture, then `_verify_tree` classified its 260-character path as
+`unsafe_entries`. The Windows run fails during checkout and correctly exercises Git stderr
+mapping, while Linux reaches the verifier; both environments need the same stable
+`path_too_long` result. The verifier now maps that path-length rule to `path_too_long` and uses the
+same safe shorter-managed-directory message. Other entry safety checks remain `unsafe_entries`.
+The focused cross-platform regression test and stderr mapping test passed locally (2 passed).

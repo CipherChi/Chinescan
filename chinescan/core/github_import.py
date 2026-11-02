@@ -47,6 +47,9 @@ _SHA = re.compile(r"[0-9A-Fa-f]{40}\Z", re.ASCII)
 _DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?\Z", re.IGNORECASE)
 _WINDOWS_PATH_LIMIT = 260
 _WINDOWS_CLONE_PATH_BUDGET = 160
+_PATH_TOO_LONG_MESSAGE = (
+    "The import location path is too long; use a shorter managed import directory."
+)
 _GIT_ERROR_MAP: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (
         (
@@ -83,7 +86,7 @@ _GIT_ERROR_MAP: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (
         ("filename too long", "path too long", "file name too long"),
         "path_too_long",
-        "The import location path is too long; use a shorter managed import directory.",
+        _PATH_TOO_LONG_MESSAGE,
     ),
     (
         ("invalid path", "unable to create file", "invalid argument"),
@@ -659,7 +662,7 @@ class GitHubImportService:
         if import_path_at_risk(self.managed_directory):
             raise GitHubImportError(
                 "path_too_long",
-                "The import location path is too long; use a shorter managed import directory.",
+                _PATH_TOO_LONG_MESSAGE,
             )
         self.managed_directory.mkdir(parents=True, exist_ok=True)
         self._assert_managed_directory()
@@ -886,9 +889,7 @@ class GitHubImportService:
                     path = parent / name
                     self._validate_entry_name(name)
                     if len(str(path)) >= 260:
-                        raise GitHubImportError(
-                            "unsafe_entries", "The repository contains a path that is too long."
-                        )
+                        raise GitHubImportError("path_too_long", _PATH_TOO_LONG_MESSAGE)
                     metadata = path.lstat()
                     if _is_link_or_reparse(path, metadata):
                         raise GitHubImportError(
