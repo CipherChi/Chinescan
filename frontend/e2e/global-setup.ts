@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,22 +57,34 @@ async function start(
   holdScanUntilExpiry = false,
   emptyAccount = false,
   projectsEnabled = false,
-): Promise<{ url: string; email: string; password: string; credentialFile: string }> {
+  missingManagedStorage = false,
+  githubImportEnabled = false,
+): Promise<{ url: string; email: string; password: string; credentialFile: string; dataDirectory: string; githubRepositoryUrl: string | null }> {
   const directory = resolve(dataRoot, `instance-${children.length}-ttl-${ttl}`);
   const python = 'uv';
   const args = ['run', 'python', pythonHarness, '--data-dir', directory, '--ttl', String(ttl)];
   if (holdScanUntilExpiry) args.push('--hold-scan-until-expiry');
   if (emptyAccount) args.push('--empty-account');
   if (projectsEnabled) args.push('--projects-enabled');
-  const child = spawn(python, args, {
-    cwd: repoRoot,
-    env: {
+  if (missingManagedStorage) args.push('--missing-managed-storage');
+  if (githubImportEnabled) args.push('--github-import-enabled');
+  const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
       PYTHONPATH: [repoRoot, process.env.PYTHONPATH].filter(Boolean).join(delimiter),
       CHINESCAN_CONFIG_PATH: resolve(directory, 'config.toml'),
       CHINESCAN_DATABASE_PATH: resolve(directory, 'records.sqlite3'),
       CHINESCAN_REPORTS_DIR: resolve(directory, 'reports'),
-    },
+  };
+  if (githubImportEnabled) {
+    childEnv.CHINESCAN_TEST_GITHUB_IMPORT = '1';
+    childEnv.CHINESCAN_BROWSER_TEST_MODE = '1';
+  } else {
+    delete childEnv.CHINESCAN_TEST_GITHUB_IMPORT;
+    delete childEnv.CHINESCAN_BROWSER_TEST_MODE;
+  }
+  const child = spawn(python, args, {
+    cwd: repoRoot,
+    env: childEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });
@@ -90,7 +102,7 @@ async function start(
     child.stdin.end(emptyAccount ? '' : `${JSON.stringify(credentials)}\n`);
     const startedAt = Date.now();
     const deadline = startedAt + STARTUP_TIMEOUT_MS;
-    let endpoint: { url: string } | undefined;
+    let endpoint: { url: string; github_repository_url?: string } | undefined;
     while (Date.now() < deadline && !endpoint) {
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`Dashboard fixture exited early (code=${child.exitCode}, signal=${child.signalCode}).`);
@@ -132,7 +144,7 @@ async function start(
           'email_masked' in payload && payload.email_masked === null &&
           'signup_available' in payload && typeof payload.signup_available === 'boolean'
         ) {
-          return { ...endpoint, ...credentials, credentialFile: resolve(directory, 'operator.json') };
+          return { ...endpoint, ...credentials, credentialFile: resolve(directory, 'operator.json'), dataDirectory: directory, githubRepositoryUrl: githubImportEnabled ? endpoint.github_repository_url ?? null : null };
         }
       } catch (error) {
         lastStatus = 'request error';
@@ -167,10 +179,21 @@ export default async function globalSetup(_config: FullConfig) {
       expiry: await start(15, makeCredentials(), true),
       signup: await start(1800, makeCredentials(), false, true),
       emptyRoots: await start(1800, makeCredentials()),
+      diagnosticsDegraded: await start(1800, makeCredentials(), false, false, false, true),
+      githubEnabled: await start(1800, makeCredentials(), false, false, false, false, true),
+      githubDisabled: await start(1800, makeCredentials()),
     };
     process.env.CHINESCAN_BROWSER_TEST_URLS = JSON.stringify(urls);
     process.env.CHINESCAN_BROWSER_PROJECT_FIXTURE = resolve(dataRoot, 'instance-0-ttl-1800-approved-project');
+    process.env.CHINESCAN_BROWSER_GITHUB_URL = String(urls.githubEnabled.githubRepositoryUrl);
+    process.env.CHINESCAN_BROWSER_GITHUB_DATA_DIR = urls.githubEnabled.dataDirectory;
+    process.env.CHINESCAN_BROWSER_DISABLED_FIXTURE_URL = urls.githubDisabled.url;
+    process.env.CHINESCAN_BROWSER_GITHUB_FIXTURE_URL = urls.githubEnabled.url;
     process.env.CHINESCAN_BROWSER_SCREENSHOT_DIR = resolve(tmpdir(), 'chinescan-projects-e2e-screenshots');
+    process.env.CHINESCAN_BROWSER_PHASE6C_SCREENSHOTS = resolve(tmpdir(), 'chinescan-phase6c-screenshots');
+    const statusScreenshotDirectory = resolve(tmpdir(), 'chinescan-phase5a-status-screenshots');
+    await mkdir(statusScreenshotDirectory, { recursive: true });
+    process.env.CHINESCAN_BROWSER_STATUS_SCREENSHOTS = statusScreenshotDirectory;
   } catch (error) {
     await Promise.all(children.map(stopOwned));
     await rm(dataRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
@@ -180,7 +203,13 @@ export default async function globalSetup(_config: FullConfig) {
     await Promise.all(children.map(stopOwned));
     delete process.env.CHINESCAN_BROWSER_TEST_URLS;
     delete process.env.CHINESCAN_BROWSER_PROJECT_FIXTURE;
+    delete process.env.CHINESCAN_BROWSER_GITHUB_URL;
+    delete process.env.CHINESCAN_BROWSER_GITHUB_DATA_DIR;
+    delete process.env.CHINESCAN_BROWSER_DISABLED_FIXTURE_URL;
+    delete process.env.CHINESCAN_BROWSER_GITHUB_FIXTURE_URL;
     delete process.env.CHINESCAN_BROWSER_SCREENSHOT_DIR;
+    delete process.env.CHINESCAN_BROWSER_PHASE6C_SCREENSHOTS;
+    delete process.env.CHINESCAN_BROWSER_STATUS_SCREENSHOTS;
     await rm(dataRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
   };
 }

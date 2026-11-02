@@ -24,6 +24,7 @@ from chinescan.core.fs_policy import (
     decide_path,
     policy_paths,
 )
+from chinescan.core.github_import import GitHubImportService
 from chinescan.core.log_locations import LogLocationService
 from chinescan.core.logging.redaction import redact
 from chinescan.core.malware_ack import MalwareAcknowledgementError, MalwareAcknowledgements
@@ -497,6 +498,60 @@ def configure_settings(
     _cli_reports_dir = reports_dir
 
 
+def doctor(
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit the full diagnostics report as JSON."
+    ),
+) -> None:
+    """Check local ChineScan readiness without changing local state."""
+    from chinescan.core.diagnostics import build_report
+
+    report = build_report(
+        config_path=_cli_config_path,
+        database_path=_cli_database_path,
+        reports_dir=_cli_reports_dir,
+    )
+    _emit_diagnostics(report, json_output, short=False)
+
+
+def status(
+    json_output: bool = typer.Option(False, "--json", help="Emit the diagnostics summary as JSON."),
+) -> None:
+    """Show a short summary of local ChineScan readiness."""
+    from chinescan.core.diagnostics import build_report
+
+    report = build_report(
+        config_path=_cli_config_path,
+        database_path=_cli_database_path,
+        reports_dir=_cli_reports_dir,
+    )
+    _emit_diagnostics(report, json_output, short=True)
+
+
+def _emit_diagnostics(report: dict[str, object], json_output: bool, *, short: bool) -> None:
+    import json
+
+    checks = report["checks"]
+    if not isinstance(checks, list):
+        raise typer.Exit(code=2)
+    selected = checks[:5] if short else checks
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {"status": report["status"], "checks": selected} if short else report, indent=2
+            )
+        )
+    else:
+        for check in selected:
+            if isinstance(check, dict):
+                typer.echo(f"[{check['state']}] {check['label']}: {check['detail']}")
+                if check.get("action_hint"):
+                    typer.echo(f"  Action: {check['action_hint']}")
+        typer.echo(f"Summary: {report['status']} ({len(checks)} checks)")
+    states = {str(item.get("state")) for item in checks if isinstance(item, dict)}
+    raise typer.Exit(code=2 if "FAIL" in states else 1 if "WARN" in states else 0)
+
+
 def _settings() -> Settings:
     options: dict[str, object] = {}
     if _cli_database_path is not None:
@@ -508,6 +563,171 @@ def _settings() -> Settings:
     except ConfigurationError as exc:
         typer.echo(str(redact(str(exc))), err=True)
         raise typer.Exit(code=exc.exit_code) from exc
+
+
+def _github_service(
+    settings: Settings,
+) -> tuple[SQLiteRepository, GitHubImportService]:
+    from chinescan.core.fs_policy import FilesystemBrowserService
+    from chinescan.core.projects import ProjectFileRegistry
+
+    repository = SQLiteRepository(settings.database_path)
+    hard, soft = policy_paths(settings)
+    managed_directory = settings.database_path.expanduser().resolve(strict=False).parent / "gh"
+    projects = ProjectService(
+        repository,
+        FilesystemBrowserService(settings.allowed_roots, hard, soft, settings.allow_soft_denied),
+        ProjectFileRegistry(None, []),
+        allowed_roots=settings.allowed_roots,
+        hard_denied=hard,
+        soft_denied=soft,
+        allow_soft_denied=settings.allow_soft_denied,
+        managed_import_directory=managed_directory,
+    )
+    service = GitHubImportService(
+        repository,
+        settings,
+        managed_directory,
+        project_service=projects,
+    )
+    return repository, service
+
+
+def _github_emit(value: dict[str, object], json_output: bool) -> None:
+    if json_output:
+        typer.echo(json.dumps(value))
+    else:
+        for key, item in value.items():
+            if item is not None:
+                typer.echo(f"{key}: {item}")
+
+
+def _github_error(exc: Exception, json_output: bool) -> None:
+    from chinescan.core.github_import import GitHubImportError
+
+    code = exc.code if isinstance(exc, GitHubImportError) else "import_unavailable"
+    message = (
+        str(exc)
+        if isinstance(exc, GitHubImportError)
+        else "The GitHub import could not be completed."
+    )
+    typer.echo(
+        json.dumps({"code": code, "message": message}) if json_output else f"{code}: {message}",
+        err=True,
+    )
+    raise typer.Exit(code=2) from exc
+
+
+def github_preview(
+    url: str = typer.Argument(...),
+    ref: str | None = typer.Option(None, "--ref"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Preview a public repository import without network access."""
+    from chinescan.core.github_import import GitHubImportError
+
+    settings = _settings()
+    if not settings.github_import_enabled:
+        _github_error(
+            GitHubImportError("feature_disabled", "Public GitHub import is disabled."),
+            json_output,
+        )
+    repository, service = _github_service(settings)
+    try:
+        preview = service.preview("cli", url, ref)
+        _github_emit(preview, json_output)
+    except Exception as exc:
+        _github_error(exc, json_output)
+    finally:
+        repository.close()
+
+
+def github_import(
+    url: str = typer.Argument(...),
+    name: str = typer.Option(..., "--name"),
+    ref: str | None = typer.Option(None, "--ref"),
+    yes: bool = typer.Option(False, "--yes"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Import a public repository after explicit confirmation."""
+    settings = _settings()
+    from chinescan.core.github_import import GitHubImportError, session_binding
+
+    if not settings.github_import_enabled:
+        _github_error(
+            GitHubImportError("feature_disabled", "Public GitHub import is disabled."),
+            json_output,
+        )
+    repository, service = _github_service(settings)
+    try:
+        preview = service.preview(session_binding("local-cli"), url, ref)
+        _github_emit(preview, json_output)
+        if not yes:
+            typer.echo("Import not started. Re-run with --yes to confirm.", err=True)
+            raise typer.Exit(code=2)
+        service.start_worker()
+        job = service.start(session_binding("local-cli"), str(preview["preview_id"]), name)
+        import time
+
+        while True:
+            current = service.get(session_binding("local-cli"), str(job["job_id"]))
+            if current["status"] in {"succeeded", "failed", "cancelled", "incomplete"}:
+                _github_emit(current, json_output)
+                if current["status"] != "succeeded":
+                    raise typer.Exit(code=2)
+                return
+            time.sleep(0.1)
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        _github_error(exc, json_output)
+    finally:
+        service.stop_worker()
+        repository.close()
+
+
+def github_status(
+    job_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show a GitHub import job status."""
+    settings = _settings()
+    from chinescan.core.github_import import GitHubImportError, session_binding
+
+    if not settings.github_import_enabled:
+        _github_error(
+            GitHubImportError("feature_disabled", "Public GitHub import is disabled."),
+            json_output,
+        )
+    repository, service = _github_service(settings)
+    try:
+        _github_emit(service.get(session_binding("local-cli"), job_id), json_output)
+    except Exception as exc:
+        _github_error(exc, json_output)
+    finally:
+        repository.close()
+
+
+def github_cancel(
+    job_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Cancel a GitHub import job."""
+    settings = _settings()
+    from chinescan.core.github_import import GitHubImportError, session_binding
+
+    if not settings.github_import_enabled:
+        _github_error(
+            GitHubImportError("feature_disabled", "Public GitHub import is disabled."),
+            json_output,
+        )
+    repository, service = _github_service(settings)
+    try:
+        _github_emit(service.cancel(session_binding("local-cli"), job_id), json_output)
+    except Exception as exc:
+        _github_error(exc, json_output)
+    finally:
+        repository.close()
 
 
 config_app = typer.Typer(help="Initialize and validate local configuration.")

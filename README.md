@@ -32,6 +32,36 @@ uv run chinescan config validate --path "$HOME/.config/chinescan/config.toml"
 
 Commands and their options are also available through `chinescan <command> --help`. Configuration initialization does not write secret values.
 
+### Local diagnostics
+
+Run `uv run chinescan doctor` for read-only checks of Python/uv and Node/npm, the Python environment,
+frontend lockfile/dependencies and build, local listeners on ports 5173/8765, credentials schema,
+configuration, database access, required directories, filesystem policy, and offline readiness.
+`uv run chinescan status` prints a short summary. Both support `--json`; exit codes are `0` for all
+PASS, `1` when any check is WARN, and `2` when a check is FAIL. The output uses ASCII status markers
+and honors `NO_COLOR`. Fix hints explain how to address each non-passing check. Core diagnostics do
+not use the network; `pip-audit`, `npm audit`, and authorized domain posture checks are opt-in.
+
+The authenticated dashboard adds **System status**. `GET /api/health` is unauthenticated and returns
+only service status, app name, version, uptime, loopback bind address, and timestamp. Authenticated
+`GET /api/ready` returns a state (`ok`, `degraded`, or `failed`), readiness checks, and allowed-root
+counts; it responds 200 for healthy/degraded and 503 on failure. Authenticated `GET /api/diagnostics`
+adds platform/runtime, config/storage, operator, policy counts, scan bounds, record counts, and up to
+50 recent redacted error summaries. Checks expose an ID, label, PASS/WARN/FAIL state, safe detail,
+and action hint. Payloads omit internal absolute paths, credentials, tokens, request bodies, and stack
+traces; error summaries stay bounded in memory.
+
+The System status page has a keyboard-accessible **Check now** button that refreshes all three
+endpoints immediately. Healthy polling runs every 30 seconds. Failed connections retry with
+exponential delays from 1 second up to a 60-second cap; successful checks reset the retry delay.
+An unauthenticated dashboard session is redirected to operator login before detailed status data is
+shown.
+
+If the System status page cannot connect, verify the loopback service and operator session, then run
+`uv run chinescan doctor --json` with the service's local configuration and database selections.
+Missing managed malware storage is a warning only; project scans do not require it. See
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#local-diagnostics) for endpoint details and troubleshooting.
+
 ## Code scan examples
 
 Run built-in rules against a local project. JSON and Markdown reports are saved automatically:
@@ -107,6 +137,29 @@ uv run chinescan --reports-dir "$HOME/chinescan-reports" code .
 ```
 
 The default SQLite database and report locations are local user-data paths. Config initialization never writes secret values; logs redact secret-like values.
+
+## Public GitHub imports
+
+Public GitHub imports are opt-in and disabled by default. To enable them, add the following to
+your local `config.toml` and restart ChineScan:
+
+```toml
+github_import_enabled = true
+github_import_timeout_seconds = 120
+github_import_max_bytes = 524288000
+github_import_max_files = 50000
+github_import_max_projects = 20
+```
+
+Imports are shallow, do not fetch submodules or Git LFS content, do not run hooks or repository
+content, reject links and unsafe filenames, and refuse redirects. Git metadata has a separate
+bounded allowance. Import and scan public repositories inside a VM. Files quarantined or removed
+by Defender can produce an incomplete import; review system security history without disabling
+Defender. Git must be installed. “Not found or private” means only public repositories are
+supported; private-repository credentials are not used. Imports can fail at the configured size,
+file-count, time, or project cap. If the UI reports `path_too_long`, shorten the configured data
+directory; the managed clone uses a short `gh` subfolder, and doctor reports an at-risk Windows
+path budget without printing the path.
 
 ## Security and responsible use
 

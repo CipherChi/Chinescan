@@ -54,14 +54,17 @@ class LogLocationService:
             pass
         else:
             raise ProjectError("invalid_scope", "Unsupported log location scope.")
-        approved = [project_root] if scope == "project" else self.projects.allowed_roots
-        decision = decide_path(
-            selected,
-            allowed_roots=approved,
-            hard_denied=self.projects.hard_denied,
-            soft_denied=self.projects.soft_denied,
-            allow_soft_denied=self.projects.allow_soft_denied,
-        )
+        if scope == "project" and record.get("kind") == "github":
+            decision = self.projects.decision(selected)
+        else:
+            approved = [project_root] if scope == "project" else self.projects.allowed_roots
+            decision = decide_path(
+                selected,
+                allowed_roots=approved,
+                hard_denied=self.projects.hard_denied,
+                soft_denied=self.projects.soft_denied,
+                allow_soft_denied=self.projects.allow_soft_denied,
+            )
         if not decision.allowed or decision.path is None or not decision.path.is_dir():
             raise ProjectError("location_denied", "The selected log folder is no longer approved.")
         if scope == "project" and not _under(decision.path, project_root):
